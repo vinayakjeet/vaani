@@ -1,7 +1,7 @@
 # Backlog
 
-Tasks come from here, not from ad-hoc requests mid-session (see CLAUDE.md /
-AGENTS.md). Check items off at the end of the session that completes them.
+Tasks come from here, not from ad-hoc requests mid-session (see
+CONTRIBUTING.md). Check items off at the end of the session that completes them.
 
 ## Foundation template (this repo)
 - [x] FastAPI app factory, `/healthz` + `/version`, pydantic-settings config, structured JSON logging
@@ -10,7 +10,7 @@ AGENTS.md). Check items off at the end of the session that completes them.
 - [x] Dockerfile (slim, non-root, uv) + docker-compose (postgres/pgvector + redis)
 - [x] GitHub Actions: ruff+pytest on PR, reusable deploy stub
 - [x] Docs skeleton: README, DECISIONS, LEARNING, QUOTAS
-- [x] CLAUDE.md / AGENTS.md conventions
+- [x] CONTRIBUTING.md conventions
 
 ## Next
 - [ ] Pick project #1, fork this repo, fill in README's Problem/Architecture/Benchmarks sections

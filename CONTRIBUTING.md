@@ -2,6 +2,10 @@
 
 Conventions for this repo and every project forked from the same chassis.
 
+Single developer, single assistant. There is no second agent and no parallel
+work stream, so nothing here assumes one: no delegation tags in backlogs, no
+branch-per-agent rules, and time estimates assume one worker.
+
 ## Stack
 
 - Python 3.13, `uv` for dependency management (`[tool.uv] package = false`,
@@ -26,6 +30,19 @@ Conventions for this repo and every project forked from the same chassis.
 6. **Never touch files outside the current task's scope.** File drive-by
    refactors as backlog items instead.
 7. **Update BACKLOG.md checkboxes at the end of each session.**
+
+## Commit granularity
+
+Batch a working session into a single commit, two at most. Commit straight to
+the default branch. These are solo projects, so a branch-and-pull-request cycle
+for routine work adds ceremony without adding review value.
+
+The exception is a pull request that is itself a deliverable, such as the
+regression-blocked PR that ShipGate publishes as a proof artifact. Those exist
+because the artifact needs them, not as a workflow habit.
+
+Never pad the history. A commit covering a session should still read as one
+coherent change with a message that explains it.
 
 ## Writing style
 
