@@ -1,0 +1,32 @@
+# Reusable deploy workflow stub. Each forked project calls this from its own
+# workflow (`uses: ./.github/workflows/deploy-reusable.yml`) once it has picked
+# a real free-tier target (Render/HF Spaces/Cloudflare/Vercel/...) and knows
+# what "deploy" means for it. Nothing here is wired to a real target yet -
+# filling that in is a per-project BACKLOG.md task, not a foundation-template
+# task, since the target differs project to project.
+name: Deploy (reusable stub)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment name (e.g. production, staging)"
+        required: true
+        type: string
+    secrets:
+      DEPLOY_TOKEN:
+        required: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy placeholder
+        run: |
+          echo "No deploy target configured yet for environment '${{ inputs.environment }}'."
+          echo "Replace this step with the real deploy (Render deploy hook curl, "
+          echo "HF Spaces git push, Cloudflare/Vercel CLI, etc.) and record the "
+          echo "choice in DECISIONS.md."

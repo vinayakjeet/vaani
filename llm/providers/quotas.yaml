@@ -1,0 +1,67 @@
+# Machine-readable provider config, consumed by llm/providers/registry.py.
+# Human-readable mirror lives in QUOTAS.md at the repo root - the two are not
+# auto-synced, update both when a limit or price changes (see DECISIONS.md).
+#
+# Prices are $/1,000,000 tokens. Set to 0.0 for "free while under quota" rather
+# than null, so cost_usd reports a real number for typical free-tier usage;
+# use null only when a provider's pricing is genuinely unknown/unverified.
+providers:
+  gemini:
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+    api_key_env: "GEMINI_API_KEY"
+    default_model: "gemini-2.0-flash"
+    rpm_limit: 15
+    reset_window: "per minute"
+    input_price_per_1m: 0.0
+    output_price_per_1m: 0.0
+    last_verified: "2026-08-04"
+
+  groq:
+    base_url: "https://api.groq.com/openai/v1"
+    api_key_env: "GROQ_API_KEY"
+    default_model: "llama-3.3-70b-versatile"
+    rpm_limit: 30
+    reset_window: "per minute"
+    input_price_per_1m: 0.0
+    output_price_per_1m: 0.0
+    last_verified: "2026-08-04"
+
+  cerebras:
+    base_url: "https://api.cerebras.ai/v1"
+    api_key_env: "CEREBRAS_API_KEY"
+    default_model: "llama3.1-8b"
+    rpm_limit: 30
+    reset_window: "per minute"
+    input_price_per_1m: 0.0
+    output_price_per_1m: 0.0
+    last_verified: "2026-08-04"
+
+  openrouter:
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    default_model: "meta-llama/llama-3.1-8b-instruct:free"
+    rpm_limit: 20
+    reset_window: "per minute"
+    input_price_per_1m: 0.0
+    output_price_per_1m: 0.0
+    last_verified: "2026-08-04"
+
+  ollama:
+    base_url: "http://localhost:11434/v1"
+    api_key_env: "OLLAMA_API_KEY"
+    default_model: "llama3.1"
+    rpm_limit: null
+    reset_window: "n/a (local)"
+    input_price_per_1m: 0.0
+    output_price_per_1m: 0.0
+    last_verified: "2026-08-04"
+
+  sarvam:
+    base_url: "https://api.sarvam.ai/v1"
+    api_key_env: "SARVAM_API_KEY"
+    default_model: "sarvam-m"
+    rpm_limit: 10
+    reset_window: "per minute"
+    input_price_per_1m: 0.0
+    output_price_per_1m: 0.0
+    last_verified: "2026-08-04"
