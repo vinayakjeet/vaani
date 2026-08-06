@@ -1,0 +1,23 @@
+# Render free tier. Rename the service before deploying a fork. The service spins down when idle, so the first request after
+# a quiet period pays a cold start. That is accepted and documented rather than
+# engineered around (see SPEC.md A5).
+services:
+  - type: web
+    name: CHANGE-ME
+    runtime: python
+    plan: free
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    # Call the interpreter the build produced rather than going through `uv run`.
+    # `uv run` re-resolves and syncs before executing, which on a cold container
+    # blows past Render's port-scan window, and it assumes uv is on the runtime
+    # PATH, which is not guaranteed just because the build step installed it.
+    startCommand: .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.2"
+      - key: ENVIRONMENT
+        value: production
+      # Set in the Render dashboard, never committed.
+      - key: SHIPGATE_DB_URL
+        sync: false

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 from collections.abc import Callable
 from typing import Protocol
 
@@ -33,6 +35,97 @@ def default_usage_parser(payload: dict) -> tuple[int | None, int | None]:
     """Standard OpenAI usage shape: {"usage": {"prompt_tokens", "completion_tokens"}}."""
     usage = payload.get("usage") or {}
     return usage.get("prompt_tokens"), usage.get("completion_tokens")
+
+
+_RETRY_IN = re.compile(r"retry in ([\d.]+)\s*(ms|s)\b", re.IGNORECASE)
+
+# Reasoning models spend far longer than httpx's 5 second default before the first
+# byte, so leaving it unset turns ordinary slow generations into network errors.
+# Generous rather than unbounded: a genuinely hung connection must still fail.
+DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
+
+
+def parse_retry_after(resp: httpx.Response) -> float | None:
+    """How long to wait after a 429, from wherever the provider chose to put it.
+
+    Three places, in order of reliability:
+
+    1. The `Retry-After` header, which is the standard and which Gemini does not
+       send.
+    2. A `google.rpc.RetryInfo` entry in `error.details`, as `retryDelay: "48s"`.
+    3. The human-readable error message: "Please retry in 48.63971551s."
+
+    Falling back through all three matters more than it looks. Without a value the
+    throttle uses a short default cooldown, so a limit that needs 49 seconds gets
+    retried after 5, fails, and burns quota indefinitely without ever succeeding.
+    Free tiers are exactly where this happens.
+    """
+    header = resp.headers.get("Retry-After")
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            pass
+
+    try:
+        payload = resp.json()
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+    # Gemini wraps its error object in a single-element list.
+    if isinstance(payload, list):
+        payload = payload[0] if payload else {}
+    if not isinstance(payload, dict):
+        return None
+
+    # `error` is an object in Google's shape but a bare string in plenty of
+    # others, so it cannot be assumed to have fields.
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+
+    for detail in error.get("details") or []:
+        if not isinstance(detail, dict):
+            continue
+        if detail.get("@type", "").endswith("RetryInfo"):
+            delay = str(detail.get("retryDelay", "")).rstrip("s")
+            try:
+                return float(delay)
+            except ValueError:
+                continue
+
+    if match := _RETRY_IN.search(str(error.get("message", ""))):
+        value = float(match.group(1))
+        # Gemini reports sub-second waits in milliseconds. Reading 607ms as 607
+        # seconds would stall a run for ten minutes over a delay of half a second.
+        return value / 1000 if match.group(2).lower() == "ms" else value
+    return None
+
+
+def total_aware_usage_parser(payload: dict) -> tuple[int | None, int | None]:
+    """Usage parser for providers that bill tokens absent from the itemised fields.
+
+    Gemini's OpenAI-compatible layer reports reasoning tokens in `total_tokens`
+    only. A real response looked like prompt=2, completion=9, total=197: the model
+    spent 186 tokens thinking, and reading only the itemised fields undercounts
+    the run by roughly eighteen times.
+
+    So output is derived as total minus prompt whenever that exceeds the reported
+    completion count. Overstating output slightly is the safe direction to be
+    wrong in for a benchmark table and a cost ceiling.
+    """
+    usage = payload.get("usage") or {}
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    total = usage.get("total_tokens")
+
+    if prompt is None or total is None:
+        return prompt, completion
+
+    derived = total - prompt
+    if completion is None or derived > completion:
+        return prompt, derived
+    return prompt, completion
 
 
 class OpenAICompatibleProvider:
@@ -92,7 +185,9 @@ class OpenAICompatibleProvider:
         }
         headers = {"Authorization": f"Bearer {api_key}"}
 
-        client = self._client or httpx.AsyncClient(base_url=self._base_url)
+        client = self._client or httpx.AsyncClient(
+            base_url=self._base_url, timeout=DEFAULT_TIMEOUT
+        )
         try:
             try:
                 resp = await client.post("/chat/completions", json=payload, headers=headers)
@@ -103,9 +198,9 @@ class OpenAICompatibleProvider:
                 await client.aclose()
 
         if resp.status_code == 429:
-            retry_after_header = resp.headers.get("Retry-After")
-            retry_after = float(retry_after_header) if retry_after_header else None
-            raise RateLimitError(f"{self.name}: rate limited", retry_after=retry_after)
+            raise RateLimitError(
+                f"{self.name}: rate limited", retry_after=parse_retry_after(resp)
+            )
         if resp.status_code >= 500:
             raise ProviderError(f"{self.name}: server error {resp.status_code}")
         if resp.status_code >= 400:

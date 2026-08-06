@@ -5,11 +5,22 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from llm.providers.base import OpenAICompatibleProvider, Provider
+from llm.providers.base import (
+    OpenAICompatibleProvider,
+    Provider,
+    default_usage_parser,
+    total_aware_usage_parser,
+)
 from llm.providers.mock import MockProvider
 from llm.types import ProviderConfigError
 
 DEFAULT_QUOTAS_PATH = Path(__file__).parent / "quotas.yaml"
+
+
+USAGE_PARSERS = {
+    "default": default_usage_parser,
+    "total_aware": total_aware_usage_parser,
+}
 
 
 class ProviderQuotaConfig(BaseModel):
@@ -20,6 +31,7 @@ class ProviderQuotaConfig(BaseModel):
     rpm_limit: int | None = None
     input_price_per_1m: float | None = None
     output_price_per_1m: float | None = None
+    usage_parser: str = "default"
     last_verified: str
 
 
@@ -47,6 +59,7 @@ def load_providers(path: Path = DEFAULT_QUOTAS_PATH) -> dict[str, Provider]:
             default_model=config.default_model,
             input_price_per_1m=config.input_price_per_1m,
             output_price_per_1m=config.output_price_per_1m,
+            usage_parser=USAGE_PARSERS[config.usage_parser],
         )
     return providers
 

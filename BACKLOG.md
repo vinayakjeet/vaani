@@ -13,5 +13,8 @@ CONTRIBUTING.md). Check items off at the end of the session that completes them.
 - [x] CONTRIBUTING.md conventions
 
 ## Next
+- [x] Backport the free-tier fixes ShipGate found: retry-after parsing, HTTP
+      timeout, reasoning-token accounting, throttle inside the retry loop
+- [x] Add render.yaml with a start command that does not use `uv run`
 - [ ] Pick project #1, fork this repo, fill in README's Problem/Architecture/Benchmarks sections
 - [ ] Wire a real deploy target into `deploy-reusable.yml` once project #1 picks one (Render/HF Spaces/...)

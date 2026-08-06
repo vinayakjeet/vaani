@@ -9,12 +9,15 @@ providers:
   gemini:
     base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
     api_key_env: "GEMINI_API_KEY"
-    default_model: "gemini-2.0-flash"
+    default_model: "gemini-flash-latest"
+    # Gemini reports reasoning tokens only in total_tokens, so the itemised
+    # fields undercount badly. See llm/providers/base.py.
+    usage_parser: "total_aware"
     rpm_limit: 15
     reset_window: "per minute"
     input_price_per_1m: 0.0
     output_price_per_1m: 0.0
-    last_verified: "2026-08-04"
+    last_verified: "2026-08-05"
 
   groq:
     base_url: "https://api.groq.com/openai/v1"
