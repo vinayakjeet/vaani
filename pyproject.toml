@@ -1,7 +1,7 @@
 [project]
-name = "ai-portfolio-template"
+name = "vaani"
 version = "0.1.0"
-description = "Foundation template for the production-AI portfolio: FastAPI service skeleton + provider-agnostic llm/ client."
+description = "Real-time Hindi and Hinglish voice agent: streamed VAD, STT, LLM and TTS with barge-in."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
@@ -15,7 +15,15 @@ dependencies = [
     "opentelemetry-sdk>=1.28",
     "opentelemetry-exporter-otlp-proto-http>=1.28",
     "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "spanlight",
+    "edge-tts>=6.1",
+    "websockets>=13.0",
 ]
+
+# Spanlight is instrumented from the first commit rather than retrofitted, which
+# was the condition on building this project before Tollgate and Dastavez.
+[tool.uv.sources]
+spanlight = { git = "https://github.com/vinayakjeet/spanlight" }
 
 [dependency-groups]
 dev = [

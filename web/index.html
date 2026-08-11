@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vaani</title>
+<style>
+  :root { color-scheme: dark; --bg:#0a0b0e; --fg:#e8ecf3; --muted:#8b93a7;
+          --line:#1e2430; --live:#3ddc97; --warn:#ffb454; }
+  * { box-sizing: border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); min-height:100vh;
+         font:16px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Helvetica,sans-serif;
+         display:flex; align-items:center; justify-content:center; padding:24px }
+  main { width:100%; max-width:560px }
+  h1 { font-size:1.6rem; letter-spacing:-.02em; margin:0 0 6px }
+  .sub { color:var(--muted); margin:0 0 28px; font-size:14.5px }
+  button { width:100%; padding:18px; border-radius:12px; border:1px solid var(--line);
+           background:#12161e; color:var(--fg); font:inherit; cursor:pointer;
+           transition:border-color .2s ease, background .2s ease }
+  button:hover:not(:disabled) { border-color:var(--live) }
+  button:disabled { opacity:.5; cursor:default }
+  button.live { border-color:var(--live); background:rgba(61,220,151,.08) }
+  .state { display:flex; align-items:center; gap:9px; margin:20px 0 8px;
+           font:13px ui-monospace,Menlo,Consolas,monospace; color:var(--muted) }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted) }
+  .dot.live { background:var(--live); animation:pulse 1.2s ease-in-out infinite }
+  .dot.warn { background:var(--warn) }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .log { margin-top:18px; border-top:1px solid var(--line); padding-top:18px }
+  .line { margin:0 0 14px }
+  .who { font:11px ui-monospace,monospace; letter-spacing:.1em; text-transform:uppercase;
+         color:var(--muted); display:block; margin-bottom:3px }
+  .err { color:var(--warn) }
+  .note { color:var(--muted); font-size:13px; margin-top:22px }
+</style>
+</head>
+<body>
+<main>
+  <h1>Vaani</h1>
+  <p class="sub">Ask about a government scheme in Hindi or Hinglish. Speak, then pause.</p>
+
+  <button id="talk">Start listening</button>
+
+  <div class="state"><span class="dot" id="dot"></span><span id="status">idle</span></div>
+
+  <div class="log" id="log"></div>
+
+  <p class="note">
+    The backend sleeps when idle, so the first answer after a quiet period is slow.
+    That wait is a cold start and is excluded from the latency numbers rather than
+    hidden in them.
+  </p>
+</main>
+
+<script type="module">
+const SERVER = location.hostname === "localhost" || location.hostname === "127.0.0.1"
+  ? `ws://${location.hostname}:8000/ws/voice`
+  : (window.VAANI_WS || `wss://${location.hostname}/ws/voice`);
+
+const talk = document.getElementById("talk");
+const dot = document.getElementById("dot");
+const statusEl = document.getElementById("status");
+const log = document.getElementById("log");
+
+let socket = null, context = null, node = null, stream = null;
+let generation = 0, listening = false;
+
+function setState(text, kind) {
+  statusEl.textContent = text;
+  dot.className = "dot" + (kind ? " " + kind : "");
+}
+
+function say(who, text, isError) {
+  const div = document.createElement("div");
+  div.className = "line" + (isError ? " err" : "");
+  div.innerHTML = `<span class="who"></span>`;
+  div.firstChild.textContent = who;
+  div.appendChild(document.createTextNode(text));
+  log.prepend(div);
+}
+
+async function start() {
+  // echoCancellation is what stops the agent hearing its own voice through the
+  // laptop speakers and interrupting itself. SPEC A1 says this is the riskiest
+  // assumption in the project, and M2 tests it on speakers rather than trusting
+  // the flag.
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+             channelCount: 1 }
+  });
+
+  context = new AudioContext();
+  await context.audioWorklet.addModule("capture-worklet.js");
+
+  socket = new WebSocket(SERVER);
+  socket.binaryType = "arraybuffer";
+
+  socket.onopen = () => {
+    generation += 1;
+    socket.send("start");
+    node = new AudioWorkletNode(context, "capture");
+    node.port.onmessage = (event) => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      const pcm = event.data;
+      // Two bytes of generation, then the samples. The server drops frames whose
+      // generation it has moved past, so audio already on the wire from an
+      // abandoned turn cannot be transcribed as part of the next one.
+      const payload = new Uint8Array(2 + pcm.byteLength);
+      new DataView(payload.buffer).setUint16(0, generation, true);
+      payload.set(new Uint8Array(pcm.buffer), 2);
+      socket.send(payload);
+    };
+    context.createMediaStreamSource(stream).connect(node);
+    listening = true;
+    talk.textContent = "Stop";
+    talk.classList.add("live");
+    setState("listening", "live");
+  };
+
+  socket.onmessage = async (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      await play(event.data);
+      return;
+    }
+    const message = JSON.parse(event.data);
+    if (message.type === "transcript") { say("you", message.text); setState("thinking", "warn"); }
+    else if (message.type === "reply") { say("vaani", message.text); }
+    else if (message.type === "audio_start") { setState("speaking", "live"); }
+    else if (message.type === "error") {
+      say("error", `${message.reason}${message.detail ? ": " + message.detail : ""}`, true);
+      setState("listening", "live");
+    }
+  };
+
+  socket.onclose = () => stop();
+  socket.onerror = () => { say("error", "connection failed", true); stop(); };
+}
+
+async function play(buffer) {
+  const audio = new Audio(URL.createObjectURL(new Blob([buffer], { type: "audio/mpeg" })));
+  audio.onended = () => setState(listening ? "listening" : "idle", listening ? "live" : "");
+  await audio.play().catch(() => setState("tap to allow audio", "warn"));
+}
+
+function stop() {
+  listening = false;
+  if (node) node.disconnect();
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  if (context) context.close();
+  if (socket && socket.readyState === WebSocket.OPEN) { socket.send("stop"); socket.close(); }
+  socket = node = context = stream = null;
+  talk.textContent = "Start listening";
+  talk.classList.remove("live");
+  setState("idle");
+}
+
+talk.onclick = async () => {
+  if (listening) { stop(); return; }
+  talk.disabled = true;
+  setState("connecting");
+  try { await start(); }
+  catch (err) { say("error", err.message, true); setState("idle"); }
+  finally { talk.disabled = false; }
+};
+</script>
+</body>
+</html>

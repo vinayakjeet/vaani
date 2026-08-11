@@ -1,55 +1,44 @@
-# ai-portfolio-template
+# Vaani
 
-Foundation template for a portfolio of production-AI projects. Fork this repo per
-project; keep the six sections below, replace the placeholders with the specifics
-of what you built.
+A real-time voice agent for Hindi and Hinglish, answering government
+scheme-eligibility questions over a streamed pipeline you can interrupt
+mid-sentence.
 
-## Problem
-_TODO: what problem does this project solve, for whom, and why does it matter?_
+**In progress.** Project three of eleven. The parts that work today are the
+walking skeleton: browser microphone to a deployed server and back as spoken
+audio, with per-stage tracing.
 
-## Architecture
-_TODO: diagram or description of the system - services, data flow, external
-providers used from `llm/providers/quotas.yaml`._
+## What it is actually for
 
-## Benchmarks
-_TODO: latency/cost/accuracy numbers that back up any claims this project makes._
+The product is a voice agent. The contribution is a measurement: **where the
+latency in a cascaded voice agent goes, and which optimisation buys which
+milliseconds**, on two stacks, with variance, including the techniques that
+bought nothing.
 
-## Technical Decisions
-_TODO: link to the relevant [DECISIONS.md](DECISIONS.md) entries; don't duplicate
-their content here._
+The first honest number, from the naive pipeline where every stage waits for the
+one before it:
 
-## What Broke
-_TODO: real incidents/bugs hit while building this, and how they were fixed or
-worked around. See [LEARNING.md](LEARNING.md) for the running log._
+```
+STT   ~1000ms   whole utterance
+LLM     983ms   whole reply
+TTS   ~2000ms   243 characters
+total  3859ms   end to end
+```
 
-## Run It
+That is unusable, and it is the baseline on purpose. The goal is sub-1000ms time
+to first audio, measured from the last frame of user speech rather than from
+endpoint-detected, because that is the wait a person actually experiences.
 
-Requires [uv](https://docs.astral.sh/uv/) and Docker.
+## Running it
 
-**Local, no Docker:**
 ```
 uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-**Docker Compose** (app + postgres/pgvector + redis, no API keys required -
-defaults to the mock LLM provider):
-```
-docker compose up --build
-```
-Then:
-```
-curl localhost:8000/healthz
-curl localhost:8000/version
-curl -X POST localhost:8000/demo/chat -H "Content-Type: application/json" -d "{\"prompt\": \"hello\"}"
-```
+Then serve `web/` and open it. Needs `GROQ_API_KEY` in `.env`.
 
-**Tests / lint:**
-```
-uv run pytest
-uv run ruff check .
-```
+## Not finished
 
-**Using a real LLM provider:** copy `.env.example` to `.env`, set the relevant
-`*_API_KEY` and `LLM_PROVIDER`, see [QUOTAS.md](QUOTAS.md) for free-tier limits
-per provider.
+Benchmarks, the eval set, and the ablation are not built yet. No number here is
+final and none of them are in a README section that claims to be.

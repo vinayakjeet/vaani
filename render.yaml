@@ -1,9 +1,10 @@
-# Render free tier. Rename the service before deploying a fork. The service spins down when idle, so the first request after
+# Render free tier. The service spins down when idle, so the first request after
 # a quiet period pays a cold start. That is accepted and documented rather than
-# engineered around (see SPEC.md A5).
+# engineered around: the first session is flagged so it can be excluded from the
+# latency statistics instead of quietly inflating them (SPEC A9).
 services:
   - type: web
-    name: CHANGE-ME
+    name: vaani
     runtime: python
     plan: free
     buildCommand: pip install uv && uv sync --frozen --no-dev
@@ -11,6 +12,7 @@ services:
     # `uv run` re-resolves and syncs before executing, which on a cold container
     # blows past Render's port-scan window, and it assumes uv is on the runtime
     # PATH, which is not guaranteed just because the build step installed it.
+    # ShipGate lost a deploy to exactly this.
     startCommand: .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
     envVars:
@@ -19,5 +21,11 @@ services:
       - key: ENVIRONMENT
         value: production
       # Set in the Render dashboard, never committed.
-      - key: SHIPGATE_DB_URL
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT
+        sync: false
+      - key: OTEL_EXPORTER_OTLP_HEADERS
         sync: false
