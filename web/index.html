@@ -53,9 +53,13 @@
 </main>
 
 <script type="module">
+// The backend is a separate deploy, so the page cannot infer its address from
+// its own hostname. Named here rather than guessed, because a wrong guess fails
+// as a socket that never opens, which looks identical to a backend that is down.
+const BACKEND = "wss://vaani-g4jh.onrender.com/ws/voice";
 const SERVER = location.hostname === "localhost" || location.hostname === "127.0.0.1"
   ? `ws://${location.hostname}:8000/ws/voice`
-  : (window.VAANI_WS || `wss://${location.hostname}/ws/voice`);
+  : (window.VAANI_WS || BACKEND);
 
 const talk = document.getElementById("talk");
 const dot = document.getElementById("dot");
