@@ -12,6 +12,63 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-12: Tail control by hedging and transport priority, not by more flushes
+
+**Context:** a tail-control brief proposed five mechanisms for the p95 floor: a hard
+350ms time-to-first-token deadline with failover, asynchronous tools with a filler at
+300ms, clause-level streaming at four or five words, context-dependent VAD, and a
+transport-layer barge-in circuit breaker inside 100ms. Three are improvements, one was
+already built, and one would have made the tail worse.
+
+**Decision, per mechanism.**
+
+*Hedge, do not fail over.* A serial failover pays the tail twice to avoid paying it
+once: 350ms wasted plus a second time-to-first-token of roughly 200ms is 550ms before
+the first token, past the p50 target and 69% of the p95 floor. A hedged second request
+fired at the measured p90 makes the worst case the larger of the two rather than their
+sum, and costs extra tokens only on the hedged fraction.
+
+*Reject clause-level streaming as architecture, keep it as a measurement.* It saves
+roughly 50 to 100ms and costs one TTS request per clause, so three clauses is three
+network round trips instead of one. That triples exposure to the variance the p95
+floor exists to bound, which makes it a median optimisation that damages the tail. It
+also breaks Devanagari prosody across the clause boundary, and a listener hears the
+second clause lose its intonation. It becomes a sixth ablation row with its quality
+cost reported, because a technique that buys 100ms for three extra requests is worth
+publishing either way.
+
+*Adopt context-dependent VAD, as an extension rather than a replacement.* The rule
+already built cuts the wait when a partial sounds finished, and it requires three
+words because "haan" and "mera" are usually the start of something longer. After a
+closed question a one-word answer genuinely is complete, which saves 500ms on
+confirmation turns.
+
+*Adopt transport priority.* This identified a live defect: the handler blocks while
+sending, and it sends the whole answer as one payload after full synthesis, so an
+interrupt can wait roughly 2000ms. Concurrent receive and playback with chunked sends
+bounds the worst case at one chunk. That is what makes 100ms plausible, and nothing
+else does.
+
+*Asynchronous tool orchestration waits for Dastavez.* The deadline and filler already
+exist. The tool stub is in-process and returns in microseconds, so building the
+orchestration now means measuring a fixture I wrote, which is the trap Spanlight
+recorded when it noticed its own demo tool was written to fail on cue.
+
+**Alternatives considered:** adopting the brief as written, which would have shipped a
+serial failover that spends the budget it was meant to protect, and a clause-level
+flush that trades the p95 target for a median gain. Adopting nothing, which would have
+missed the transport defect and the confirmation-turn case, both of which are real.
+
+**Consequences, and this is the part that governs the order of work.** Every number in
+the brief is intuited: 350ms, 300ms, 100ms, four or five words. This portfolio has
+twice paid for that. ShipGate gated on 2 points against a judge whose measured noise
+floor was 20, and Spanlight shipped a threshold that fired on a pattern written down
+as healthy. So the mechanisms get built with their thresholds as named,
+labelled-provisional constants, and the numbers are set from measured distributions
+once M0.1 exists. M2.4 stays measured rather than targeted for the same reason, and
+that is the answer to the 100ms figure: it is a budget we verify, not a target we
+assert.
+
 ## 2026-08-12: The target is p50 under 500ms and p95 under 800ms, and filler does not count
 
 **Context:** the goal was "sub-1000ms time to first audio", a single number with no
