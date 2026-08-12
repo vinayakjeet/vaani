@@ -112,36 +112,6 @@ def test_an_undeclared_attribute_recorded_late_is_refused() -> None:
 CANARY = "mera-naam-canary-hai"
 
 
-@pytest.fixture
-def exported(monkeypatch):
-    """Spans from a genuinely recording tracer, not the no-op one.
-
-    Without this the tests below prove nothing. No OTLP endpoint is configured in
-    the suite, so `spanlight.init` was never called and `get_tracer` hands back a
-    tracer whose spans are `NonRecordingSpan`. Nothing is written to those, so
-    `record_exception=True` and `record_exception=False` behave identically and the
-    leak test passed against the leak.
-
-    A local provider rather than the global one, because installing a global
-    provider mid-suite is how the previous project left a metric exporter posting
-    to a dead host for the rest of its run.
-    """
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-
-    import vaani.spans as spans_module
-
-    monkeypatch.setattr(
-        spans_module.spanlight, "get_tracer", lambda: provider.get_tracer("test")
-    )
-    return exporter
-
-
 def test_a_recording_span_actually_carries_its_attributes(exported) -> None:
     """Guards every test below, which are all about what a recorded span contains.
     If the fixture were not recording they would all pass against anything."""

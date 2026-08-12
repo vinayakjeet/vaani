@@ -12,12 +12,14 @@ tested against a string rather than against a live model.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator
 
 import structlog
 
 from llm import ChatClient, ChatMessage
 from llm.types import StreamCompleted, TextChunk, ToolCall, ToolCallsRequested
+from vaani.spans import LLM_GENERATE, stage_span
 from vaani.tools import ToolError, dispatch, tool_schemas
 from vaani.turn import SYSTEM_PROMPT
 
@@ -49,10 +51,20 @@ class StreamedTurn:
         self._max_tool_rounds = max_tool_rounds
 
     async def run(self, question: str) -> AsyncIterator[str]:
+        # One span for the turn's generation, not one per round, because the
+        # listener waited for all of them. Time to first token is an event on it
+        # rather than the duration, which is how long the model talked for.
+        with stage_span(LLM_GENERATE, **{"gen_ai.system": self._provider}) as stage:
+            async for chunk in self._rounds(question, stage):
+                yield chunk
+
+    async def _rounds(self, question: str, stage) -> AsyncIterator[str]:
         messages = [
             ChatMessage(role="system", content=SYSTEM_PROMPT),
             ChatMessage(role="user", content=question),
         ]
+        started = time.monotonic()
+        first_token = False
 
         for round_index in range(self._max_tool_rounds + 1):
             requested: list[ToolCall] = []
@@ -62,6 +74,16 @@ class StreamedTurn:
             ):
                 match event:
                     case TextChunk():
+                        if not first_token:
+                            first_token = True
+                            stage.record(
+                                **{
+                                    "vaani.llm.first_token_ms": (
+                                        time.monotonic() - started
+                                    )
+                                    * 1000
+                                }
+                            )
                         yield event.text
                     case ToolCallsRequested():
                         requested = event.calls
@@ -76,6 +98,7 @@ class StreamedTurn:
                         )
 
             if not requested:
+                stage.record(**{"vaani.llm.rounds": round_index + 1})
                 return
 
             if round_index == self._max_tool_rounds:
@@ -83,6 +106,7 @@ class StreamedTurn:
                 # honest option: silence reads as a hang, and answering anyway
                 # would be a confident reply built on a check that never ran.
                 logger.warning("turn.tool_rounds_exhausted", rounds=round_index + 1)
+                stage.record(**{"vaani.llm.rounds": round_index + 1})
                 yield COULD_NOT_CHECK
                 return
 

@@ -13,6 +13,7 @@ queued into a worse experience nobody can debug.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import spanlight
 import structlog
@@ -26,6 +27,12 @@ from vaani.protocol import (
     ServerMessage,
     decode,
     duration_ms,
+)
+from vaani.spans import (
+    PLAYBACK_FIRST_AUDIO,
+    TURN,
+    VAD_ENDPOINT,
+    stage_span,
 )
 from vaani.stt import GroqWhisper, SttError
 from vaani.tts import EdgeTts, TtsError
@@ -75,6 +82,10 @@ async def _serve(socket: WebSocket) -> None:
     buffer = bytearray()
     frames = 0
     generation = 0
+    # When this turn's first speech frame arrived. `vad.endpoint` starts there
+    # rather than at socket open, because a user who takes three seconds to begin
+    # would otherwise have that silence recorded as detection work.
+    speech_began_at: int | None = None
 
     await socket.send_json({"type": ServerMessage.READY})
 
@@ -97,6 +108,7 @@ async def _serve(socket: WebSocket) -> None:
                 endpointer.reset()
                 buffer.clear()
                 frames = 0
+                speech_began_at = None
             continue
 
         if "bytes" not in message:
@@ -117,6 +129,8 @@ async def _serve(socket: WebSocket) -> None:
 
         buffer.extend(frame.pcm)
         frames += 1
+        if speech_began_at is None and endpointer.started:
+            speech_began_at = time.time_ns()
 
         if frames >= MAX_UTTERANCE_FRAMES:
             await socket.send_json(
@@ -125,15 +139,34 @@ async def _serve(socket: WebSocket) -> None:
             endpointer.reset()
             buffer.clear()
             frames = 0
+            speech_began_at = None
             continue
 
         if not endpointer.accept(frame.pcm):
             continue
 
+        # Closed the instant the endpointer fires, before any request is built, and
+        # backdated to the first frame of speech. The trailing silence is inside it
+        # on purpose: it is the detector's own cost, so the aggressiveness knob
+        # visibly moves this number, which is the point of measuring it.
+        with stage_span(
+            VAD_ENDPOINT,
+            start_time=speech_began_at,
+            **{
+                "vaani.vad.speech_ms": endpointer.speech_ms,
+                "vaani.vad.trailing_silence_ms": endpointer.trailing_silence_ms,
+                "vaani.vad.aggressiveness": endpointer.aggressiveness
+                if endpointer.aggressiveness is not None
+                else -1,
+            },
+        ):
+            pass
+
         spoken = bytes(buffer)
         buffer.clear()
         frames = 0
         endpointer.reset()
+        speech_began_at = None
         await _answer(socket, turn, spoken, generation)
 
 
@@ -143,8 +176,18 @@ async def _answer(socket: WebSocket, turn: Turn, pcm: bytes, generation: int) ->
     The session span wraps the whole turn including the failure paths, so a turn
     that ended in an apology is still one session in the trace rather than a gap
     where a session should be.
+
+    One session per turn rather than per socket, which is a deviation from SPEC's
+    tree and a deliberate one. Detector state in Spanlight is per session, so a
+    session spanning a whole conversation would read the repeated tool calls of
+    three separate questions as a loop and fire on a healthy dialogue. ShipGate hit
+    the same thing and went to per-item sessions for the same reason. The `turn`
+    span still exists inside it so the attributes SPEC names have somewhere to live.
     """
-    with spanlight.session(name="vaani.turn") as session_id:
+    with spanlight.session(name="vaani.turn") as session_id, stage_span(
+        TURN,
+        **{"vaani.turn.index": generation, "vaani.turn.interrupted": False},
+    ):
         try:
             result = await turn.run(pcm)
         except SttError as exc:
@@ -182,5 +225,21 @@ async def _answer(socket: WebSocket, turn: Turn, pcm: bytes, generation: int) ->
                 "generation": generation,
             }
         )
+
+        # Starts when the first audio goes onto the wire. It should end when the
+        # browser reports playback has begun, and the browser does not report yet,
+        # so it closes immediately and says so rather than pretending. A span that
+        # silently never ends is worse than a short one that admits what it is
+        # missing, and `reported=false` is queryable, which an absent span is not.
+        queued_at = time.monotonic()
         await socket.send_bytes(result.audio)
+        with stage_span(
+            PLAYBACK_FIRST_AUDIO,
+            **{
+                "vaani.playback.queued_ms": (time.monotonic() - queued_at) * 1000,
+                "vaani.playback.reported": False,
+            },
+        ):
+            pass
+
         await socket.send_json({"type": ServerMessage.AUDIO_END})

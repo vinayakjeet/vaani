@@ -106,12 +106,22 @@ class StageSpan:
 
 
 @contextmanager
-def stage_span(name: str, **attributes: object) -> Iterator[StageSpan]:
+def stage_span(
+    name: str, *, start_time: int | None = None, **attributes: object
+) -> Iterator[StageSpan]:
     """One pipeline stage, with its attributes checked against the contract.
 
     Raises rather than dropping an unknown attribute. A silently ignored one gives
     a green test, a working service, and a dashboard panel that is empty for a
     reason nobody can find, which is the failure this whole project is about.
+
+    `start_time` backdates the span, in nanoseconds from `time.time_ns`. Some
+    stages begin many iterations before anything knows they did: `vad.endpoint`
+    starts on the first frame of speech and only ends once the endpointer fires,
+    and holding a context manager open across a socket loop to express that would
+    put the span's lifetime in the hands of every `continue` in the loop. Recording
+    when it began and backdating is the same measurement with fewer ways to leak a
+    span.
     """
     if name not in CONTRACT:
         raise UndeclaredAttribute(f"{name} is not a declared stage span")
@@ -136,7 +146,10 @@ def stage_span(name: str, **attributes: object) -> Iterator[StageSpan]:
     # the attributes, it was in the events, and nothing was looking there.
     tracer = spanlight.get_tracer()
     with tracer.start_as_current_span(
-        name, record_exception=False, set_status_on_exception=False
+        name,
+        record_exception=False,
+        set_status_on_exception=False,
+        start_time=start_time,
     ) as span:
         for key, value in attributes.items():
             span.set_attribute(key, value)

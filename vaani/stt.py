@@ -16,11 +16,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
-import spanlight
 import structlog
 
 from vaani.audio import to_wav
 from vaani.protocol import FRAME_MS
+from vaani.spans import STT_REQUEST, STT_STREAM, stage_span
 
 logger = structlog.get_logger(__name__)
 
@@ -109,32 +109,42 @@ class ChunkedStt:
         self.name = f"chunked:{transcriber.name}"
 
     async def stream(self, frames: AsyncIterator[bytes]) -> AsyncIterator[Partial]:
-        buffer = bytearray()
-        since_last = 0
-        index = 0
-
-        async for frame in frames:
-            buffer += frame
-            since_last += FRAME_MS
-            if since_last < self._interval_ms:
-                continue
-
+        # Wraps the recogniser only. The endpoint wait belongs to `vad.endpoint`,
+        # and counting it here as well would put the same milliseconds in two
+        # columns and make the waterfall add up to more than the turn.
+        with stage_span(STT_STREAM, **{"vaani.stt.streaming": self.streaming}) as stage:
+            buffer = bytearray()
             since_last = 0
-            index += 1
-            try:
-                interim = await self._transcriber.transcribe(bytes(buffer))
-            except SttError:
-                # Logged without the audio or the text. A partial that failed is
-                # worth counting, because a stack whose partials all fail is
-                # indistinguishable from one with no partials at all.
-                logger.warning("stt.partial_failed", provider=self.name, index=index)
-                continue
-            yield Partial(text=interim.text, final=False, index=index)
+            index = 0
 
-        index += 1
-        final = await self._transcriber.transcribe(bytes(buffer))
-        logger.info("stt.stream_done", provider=self.name, requests=index)
-        yield Partial(text=final.text, final=True, index=index)
+            async for frame in frames:
+                buffer += frame
+                since_last += FRAME_MS
+                if since_last < self._interval_ms:
+                    continue
+
+                since_last = 0
+                index += 1
+                try:
+                    interim = await self._transcriber.transcribe(bytes(buffer))
+                except SttError:
+                    # Logged without the audio or the text. A partial that failed
+                    # is worth counting, because a stack whose partials all fail is
+                    # indistinguishable from one with no partials at all.
+                    logger.warning("stt.partial_failed", provider=self.name, index=index)
+                    continue
+                yield Partial(text=interim.text, final=False, index=index)
+
+            index += 1
+            final = await self._transcriber.transcribe(bytes(buffer))
+            stage.record(
+                **{
+                    "vaani.stt.partials": index - 1,
+                    "vaani.stt.final_chars": len(final.text),
+                }
+            )
+            logger.info("stt.stream_done", provider=self.name, requests=index)
+            yield Partial(text=final.text, final=True, index=index)
 
 
 class GroqWhisper:
@@ -157,8 +167,13 @@ class GroqWhisper:
         if not self._api_key:
             raise SttError("GROQ_API_KEY is not set")
 
-        with spanlight.model_span(provider="groq", operation="transcribe") as span:
-            span.set_attribute("vaani.stt.streaming", self.streaming)
+        with stage_span(
+            STT_REQUEST,
+            **{
+                "gen_ai.system": "groq",
+                "vaani.stt.audio_ms": round(len(pcm) / 32),
+            },
+        ) as stage:
             try:
                 async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
                     response = await client.post(
@@ -178,8 +193,12 @@ class GroqWhisper:
 
             payload = response.json()
             text = (payload.get("text") or "").strip()
-            span.set_attribute("vaani.stt.final_chars", len(text))
-            span.set_attribute("gen_ai.response.model", payload.get("model", self._model))
+            stage.record(
+                **{
+                    "vaani.stt.final_chars": len(text),
+                    "gen_ai.response.model": payload.get("model", self._model),
+                }
+            )
 
         if not text:
             raise SttError("empty transcript")

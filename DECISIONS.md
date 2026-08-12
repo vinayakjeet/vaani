@@ -12,6 +12,42 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-12: A session is one turn, and stage spans are not tool spans
+
+**Context:** wiring SPEC's span tree turned up two choices that look like details
+and are not.
+
+**Decision:** a Spanlight session wraps one turn rather than one socket, with a
+`turn` span inside it carrying the attributes SPEC names. And stage spans are
+created from `spanlight.get_tracer()` directly, not `spanlight.tool_span`.
+
+**Alternatives considered.** A session per socket, which is what SPEC's tree
+implies, rejected because detector state in Spanlight is per session: a session
+holding a whole conversation reads the repeated tool calls of three separate
+questions as a loop and fires on a healthy dialogue. ShipGate hit the same thing
+and moved to per-item sessions. The cost is that a multi-turn conversation is
+several traces rather than one, and cross-turn analysis becomes a query.
+
+`tool_span` for the stages, which is the obvious helper and is wrong here: it names
+the span `tool <name>` and stamps the tool attributes on it, so five pipeline
+stages a turn would look like repeated tool calls to the loop detector and to the
+silent-tool-failure detector. That is manufacturing detections out of a healthy
+pipeline, which is the failure mode Spanlight measured at 14.3% and 28.6% of
+healthy sessions before its rules were rewritten.
+
+**Consequences:** `record_exception` and `set_status_on_exception` are both off on
+every stage span. Their defaults attach `exception.message` and a full stack trace,
+and this pipeline's exceptions carry provider error bodies that can quote a
+transcript back. The canary test for that passed against the leak until its fixture
+was given a genuinely recording tracer: with no endpoint configured every span is a
+`NonRecordingSpan` and nothing is written to it either way, so both settings
+behaved identically.
+
+`playback.first_audio` should end when the browser reports playback started, and
+the browser does not report yet, so it closes immediately with
+`vaani.playback.reported=false`. Queryable and honest, where a span that silently
+never ends would be neither.
+
 ## 2026-08-12: A stream is retried only until its first event
 
 **Context:** `ChatClient.complete` is wrapped in `retry_with_backoff`, and the
