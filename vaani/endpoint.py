@@ -16,6 +16,7 @@ import array
 import math
 from dataclasses import dataclass, field
 
+from vaani.completeness import looks_complete
 from vaani.protocol import FRAME_MS
 
 # Roughly the level of a quiet room on a laptop microphone, in RMS over PCM16.
@@ -61,6 +62,12 @@ AGGRESSIVENESS: dict[int, tuple[float, int]] = {
 
 DEFAULT_AGGRESSIVENESS = 2
 
+# The endpoint wait once the partial transcript already sounds finished. Short on
+# purpose: it is the largest single term in the optimised budget, and it is also the
+# one that risks cutting people off, so it is a named number reported beside its
+# false-endpoint rate rather than tuned quietly.
+DEFAULT_EARLY_SILENCE_MS = 200
+
 
 def rms(pcm: bytes) -> float:
     """Root mean square of one frame of little-endian PCM16."""
@@ -77,6 +84,11 @@ class Endpointer:
     trailing_silence_ms: int = DEFAULT_TRAILING_SILENCE_MS
     min_speech_ms: int = DEFAULT_MIN_SPEECH_MS
     min_resume_ms: int = DEFAULT_MIN_RESUME_MS
+    early_silence_ms: int = DEFAULT_EARLY_SILENCE_MS
+    # Off unless a caller feeds partials. The unstreamed baseline has no partial to
+    # read, and it must keep measuring the full timeout or the ablation would be
+    # comparing the optimised path against itself.
+    semantic: bool = False
     # Which named setting produced this one, when a named setting did. Recorded so
     # a waterfall row can say which knob position it was measured at rather than
     # leaving the reader to infer it from two numbers.
@@ -86,6 +98,7 @@ class Endpointer:
     silence_ms: int = field(default=0, init=False)
     _started: bool = field(default=False, init=False)
     _resume_ms: int = field(default=0, init=False)
+    _partial_complete: bool = field(default=False, init=False)
 
     @classmethod
     def at(cls, aggressiveness: int = DEFAULT_AGGRESSIVENESS, **overrides: object) -> Endpointer:
@@ -101,6 +114,28 @@ class Endpointer:
             aggressiveness=aggressiveness,
             **overrides,
         )
+
+    def note_partial(self, partial: str) -> None:
+        """Feed the latest partial transcript, so the wait can be shortened.
+
+        A partial can go from complete back to incomplete as more words arrive, and
+        the flag follows it rather than latching. "mujhe ghar chahiye" is finished;
+        "mujhe ghar chahiye lekin" is not, and latching would cut the caller off
+        exactly when they were about to qualify what they said.
+        """
+        self._partial_complete = looks_complete(partial)
+
+    @property
+    def silence_needed_ms(self) -> int:
+        """How much quiet ends the turn right now.
+
+        The number moves during a turn, which is the whole point of the technique
+        and also why the span records both timeouts: a waterfall showing only the
+        configured one would report a wait that never happened.
+        """
+        if self.semantic and self._partial_complete:
+            return min(self.early_silence_ms, self.trailing_silence_ms)
+        return self.trailing_silence_ms
 
     @property
     def started(self) -> bool:
@@ -130,10 +165,11 @@ class Endpointer:
             return False
 
         self.silence_ms += FRAME_MS
-        return self.silence_ms >= self.trailing_silence_ms
+        return self.silence_ms >= self.silence_needed_ms
 
     def reset(self) -> None:
         self.speech_ms = 0
         self.silence_ms = 0
         self._started = False
         self._resume_ms = 0
+        self._partial_complete = False
