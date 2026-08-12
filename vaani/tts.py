@@ -15,6 +15,8 @@ from typing import Protocol
 import spanlight
 import structlog
 
+from vaani.sentences import from_stream
+
 logger = structlog.get_logger(__name__)
 
 # Hindi voices. Neural voices from this provider handle Devanagari and read
@@ -31,6 +33,31 @@ AUDIO_MIME = "audio/mpeg"
 
 class TtsError(Exception):
     """Synthesis failed or produced nothing playable."""
+
+
+async def speak_as_they_arrive(
+    tokens: AsyncIterator[str], tts: TtsProvider, voice: str = VOICE_HI
+) -> AsyncIterator[bytes]:
+    """Audio for each sentence as soon as the token stream completes that sentence.
+
+    The overlap the milestone is named for: sentence one is being synthesised, and
+    then played, while the model is still writing sentence three. The unstreamed
+    baseline in `vaani/turn.py` waits for the whole reply before it starts, and the
+    gap between the two is a row in the ablation.
+
+    Each sentence is its own synthesis request, so the audio arrives as a sequence
+    of separate encoded streams rather than one. Browsers play them back to back,
+    and whether the joins are audible is an open question the M1.8 note already
+    raises. It is a quality cost paid for milliseconds, so the ablation reports it
+    rather than only the milliseconds.
+    """
+    sentences = 0
+    async for sentence in from_stream(tokens):
+        sentences += 1
+        async for chunk in tts.synthesize(sentence, voice):
+            yield chunk
+
+    logger.info("tts.stream_done", provider=tts.name, sentences=sentences)
 
 
 class TtsProvider(Protocol):
