@@ -14,11 +14,15 @@ class RecordingTts:
 
     def __init__(self, tokens_seen: list[str] | None = None) -> None:
         self.said: list[str] = []
+        self.indices: list[int] = []
         self.said_after_tokens: list[int] = []
         self._tokens_seen = tokens_seen if tokens_seen is not None else []
 
-    async def synthesize(self, text: str, voice: str = "hi-IN-SwaraNeural") -> AsyncIterator[bytes]:
+    async def synthesize(
+        self, text: str, voice: str = "hi-IN-SwaraNeural", index: int = 0
+    ) -> AsyncIterator[bytes]:
         self.said.append(text)
+        self.indices.append(index)
         self.said_after_tokens.append(len(self._tokens_seen))
         yield b"audio:" + text.encode()
 
@@ -74,6 +78,20 @@ async def test_a_reply_with_no_terminator_is_still_spoken() -> None:
 
     assert tts.said == ["Aap eligible hain lekin"]
     assert audio
+
+
+async def test_each_sentence_is_numbered_for_its_span() -> None:
+    """`vaani.tts.sentence_index` is what separates sentence one's latency from
+    sentence three's. Without it every synthesis span in a turn looks alike and the
+    first-sentence flush cannot be read off the trace at all."""
+    tts = RecordingTts()
+
+    async for _chunk in speak_as_they_arrive(
+        stream(["Aap eligible hain. ", "Aapko 6000 milega."]), tts
+    ):
+        pass
+
+    assert tts.indices == [1, 2]
 
 
 async def test_an_empty_reply_synthesises_nothing() -> None:

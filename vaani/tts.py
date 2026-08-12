@@ -9,13 +9,14 @@ exercised until the day it was needed.
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from typing import Protocol
 
-import spanlight
 import structlog
 
 from vaani.sentences import from_stream
+from vaani.spans import TTS_SYNTHESIZE, stage_span
 
 logger = structlog.get_logger(__name__)
 
@@ -54,7 +55,7 @@ async def speak_as_they_arrive(
     sentences = 0
     async for sentence in from_stream(tokens):
         sentences += 1
-        async for chunk in tts.synthesize(sentence, voice):
+        async for chunk in tts.synthesize(sentence, voice, index=sentences):
             yield chunk
 
     logger.info("tts.stream_done", provider=tts.name, sentences=sentences)
@@ -64,7 +65,7 @@ class TtsProvider(Protocol):
     name: str
     mime: str
 
-    def synthesize(self, text: str, voice: str) -> AsyncIterator[bytes]: ...
+    def synthesize(self, text: str, voice: str, index: int = 0) -> AsyncIterator[bytes]: ...
 
 
 class EdgeTts:
@@ -78,31 +79,43 @@ class EdgeTts:
     name = "edge-tts"
     mime = AUDIO_MIME
 
-    async def synthesize(self, text: str, voice: str = VOICE_HI) -> AsyncIterator[bytes]:
+    async def synthesize(
+        self, text: str, voice: str = VOICE_HI, index: int = 0
+    ) -> AsyncIterator[bytes]:
         import edge_tts
 
-        with spanlight.model_span(provider=self.name, operation="synthesize") as span:
-            span.set_attribute("vaani.tts.voice", voice)
-            span.set_attribute("vaani.tts.chars", len(text))
-
-            first = True
+        started = time.monotonic()
+        with stage_span(
+            TTS_SYNTHESIZE,
+            **{
+                "gen_ai.system": self.name,
+                "vaani.tts.voice": voice,
+                "vaani.tts.chars": len(text),
+                "vaani.tts.sentence_index": index,
+            },
+        ) as stage:
             chunks = 0
             try:
                 async for chunk in edge_tts.Communicate(text, voice).stream():
                     if chunk["type"] != "audio":
                         continue
-                    if first:
+                    if chunks == 0:
                         # The number the whole project is about. Time to first
                         # audio is what a listener experiences as responsiveness,
-                        # and it is not the same as time to a finished answer.
-                        span.add_event("vaani.tts.first_chunk")
-                        first = False
+                        # and it is not the span's duration, which is how long
+                        # synthesis took.
+                        stage.record(
+                            **{
+                                "vaani.tts.first_chunk_ms": (time.monotonic() - started) * 1000
+                            }
+                        )
+                        stage.mark("vaani.tts.first_chunk")
                     chunks += 1
                     yield chunk["data"]
             except Exception as exc:
                 raise TtsError(f"{type(exc).__name__}") from exc
 
-            span.set_attribute("vaani.tts.chunks", chunks)
+            stage.record(**{"vaani.tts.chunks": chunks})
 
         if chunks == 0:
             raise TtsError("no audio produced")
