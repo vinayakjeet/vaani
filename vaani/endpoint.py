@@ -33,6 +33,34 @@ DEFAULT_TRAILING_SILENCE_MS = 700
 # stray noise starts a turn that then ends in silence and transcribes to nothing.
 DEFAULT_MIN_SPEECH_MS = 200
 
+# How much sustained speech it takes to cancel a pending endpoint. Without this a
+# single loud frame resets the trailing-silence timer, so one keyboard press or
+# one clatter during the pause puts the user back to waiting, and in a room with a
+# television the turn never ends at all. Three frames is enough to tell a syllable
+# from a click without adding audible lag to a genuine resumption.
+DEFAULT_MIN_RESUME_MS = 60
+
+# The ablation's VAD knob, as four named settings rather than two loose numbers.
+# Higher is more eager to call something silence: it endpoints sooner and risks
+# cutting people off, which is the trade SPEC states and the ablation measures.
+# The false-endpoint rate is reported beside the milliseconds, never instead.
+#
+# Provisional, and not allowed to stay that way. Every threshold in the previous
+# project had to be measured before it shipped, and these are guesses at the level
+# of a quiet room. M4.2's recorded corpus is what sets them, and until it exists
+# the numbers here are labelled rather than trusted.
+# Trailing values are whole numbers of frames on purpose. Audio arrives in 20ms
+# frames, so a timeout of 850ms is reached at 860 and the configured number is one
+# the system can never actually hit.
+AGGRESSIVENESS: dict[int, tuple[float, int]] = {
+    0: (400.0, 1000),
+    1: (500.0, 840),
+    2: (600.0, 700),
+    3: (750.0, 500),
+}
+
+DEFAULT_AGGRESSIVENESS = 2
+
 
 def rms(pcm: bytes) -> float:
     """Root mean square of one frame of little-endian PCM16."""
@@ -48,10 +76,31 @@ class Endpointer:
     threshold_rms: float = DEFAULT_THRESHOLD_RMS
     trailing_silence_ms: int = DEFAULT_TRAILING_SILENCE_MS
     min_speech_ms: int = DEFAULT_MIN_SPEECH_MS
+    min_resume_ms: int = DEFAULT_MIN_RESUME_MS
+    # Which named setting produced this one, when a named setting did. Recorded so
+    # a waterfall row can say which knob position it was measured at rather than
+    # leaving the reader to infer it from two numbers.
+    aggressiveness: int | None = None
 
     speech_ms: int = field(default=0, init=False)
     silence_ms: int = field(default=0, init=False)
     _started: bool = field(default=False, init=False)
+    _resume_ms: int = field(default=0, init=False)
+
+    @classmethod
+    def at(cls, aggressiveness: int = DEFAULT_AGGRESSIVENESS, **overrides: object) -> Endpointer:
+        """An endpointer at one of the named settings the ablation sweeps."""
+        if aggressiveness not in AGGRESSIVENESS:
+            raise ValueError(
+                f"aggressiveness must be one of {sorted(AGGRESSIVENESS)}, got {aggressiveness}"
+            )
+        threshold, trailing = AGGRESSIVENESS[aggressiveness]
+        return cls(
+            threshold_rms=threshold,
+            trailing_silence_ms=trailing,
+            aggressiveness=aggressiveness,
+            **overrides,
+        )
 
     @property
     def started(self) -> bool:
@@ -66,11 +115,17 @@ class Endpointer:
         """
         if rms(pcm) >= self.threshold_rms:
             self.speech_ms += FRAME_MS
-            self.silence_ms = 0
+            self._resume_ms += FRAME_MS
             if self.speech_ms >= self.min_speech_ms:
                 self._started = True
+            # Only sustained speech cancels a pending endpoint. One loud frame is a
+            # click or a door, and letting it clear the timer is how a turn in a
+            # noisy room never ends.
+            if self._resume_ms >= self.min_resume_ms:
+                self.silence_ms = 0
             return False
 
+        self._resume_ms = 0
         if not self._started:
             return False
 
@@ -81,3 +136,4 @@ class Endpointer:
         self.speech_ms = 0
         self.silence_ms = 0
         self._started = False
+        self._resume_ms = 0

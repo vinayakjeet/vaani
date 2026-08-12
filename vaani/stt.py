@@ -11,6 +11,7 @@ reports which one it is.
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -19,6 +20,7 @@ import spanlight
 import structlog
 
 from vaani.audio import to_wav
+from vaani.protocol import FRAME_MS
 
 logger = structlog.get_logger(__name__)
 
@@ -55,6 +57,84 @@ class SttProvider(Protocol):
     streaming: bool
 
     async def transcribe(self, pcm: bytes) -> Transcript: ...
+
+
+@dataclass(frozen=True)
+class Partial:
+    """A transcript of everything heard so far, and whether it can still change."""
+
+    text: str
+    final: bool
+    # Which request produced it, counting from one. On the chunked stack this is
+    # also the number of provider calls the partial cost, which is the price SPEC
+    # A4 says must not be glossed over.
+    index: int
+
+
+class StreamingStt(Protocol):
+    """Anything that can emit transcripts while the user is still speaking.
+
+    `streaming` says whether it genuinely is one. A chunked implementation
+    satisfies this interface and is not a streaming recogniser, and the waterfall
+    reports the difference rather than letting the shared interface imply
+    equivalence.
+    """
+
+    name: str
+    streaming: bool
+
+    def stream(self, frames: AsyncIterator[bytes]) -> AsyncIterator[Partial]: ...
+
+
+class ChunkedStt:
+    """Partials by re-transcribing the audio so far, repeatedly. Not streaming.
+
+    This is SPEC A4 made concrete. Groq's endpoint takes a finished file, so a
+    partial on the free stack costs a whole request over the whole utterance to
+    date, and the requests get more expensive as the utterance grows. That is
+    likely the single largest difference between the two waterfalls, so it is a
+    named class rather than a flag on the streaming one.
+
+    A failed partial is skipped rather than raised. It is a guess that was going to
+    be replaced by the next one, and failing the turn over a discarded intermediate
+    result would trade a real answer for a provisional one. The final transcript is
+    the one allowed to fail loudly.
+    """
+
+    streaming = False
+
+    def __init__(self, transcriber: SttProvider, interval_ms: int = 600) -> None:
+        self._transcriber = transcriber
+        self._interval_ms = interval_ms
+        self.name = f"chunked:{transcriber.name}"
+
+    async def stream(self, frames: AsyncIterator[bytes]) -> AsyncIterator[Partial]:
+        buffer = bytearray()
+        since_last = 0
+        index = 0
+
+        async for frame in frames:
+            buffer += frame
+            since_last += FRAME_MS
+            if since_last < self._interval_ms:
+                continue
+
+            since_last = 0
+            index += 1
+            try:
+                interim = await self._transcriber.transcribe(bytes(buffer))
+            except SttError:
+                # Logged without the audio or the text. A partial that failed is
+                # worth counting, because a stack whose partials all fail is
+                # indistinguishable from one with no partials at all.
+                logger.warning("stt.partial_failed", provider=self.name, index=index)
+                continue
+            yield Partial(text=interim.text, final=False, index=index)
+
+        index += 1
+        final = await self._transcriber.transcribe(bytes(buffer))
+        logger.info("stt.stream_done", provider=self.name, requests=index)
+        yield Partial(text=final.text, final=True, index=index)
 
 
 class GroqWhisper:
