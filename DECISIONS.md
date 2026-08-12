@@ -12,6 +12,52 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-12: The target is p50 under 500ms and p95 under 800ms, and filler does not count
+
+**Context:** the goal was "sub-1000ms time to first audio", a single number with no
+distribution attached. The target is now p50 under 500ms with a p95 reliability
+floor under 800ms, which is a different problem rather than a tighter version of the
+same one.
+
+**Decision:** SPEC's budget table gains a p95 column, and the p95 is what decides
+the technique list. A median is bought by optimisation: remove a wait, overlap two
+stages, skip a request. A tail is not, because the tail is a provider having a bad
+second and no pipeline design makes a free-tier endpoint answer faster when it is
+queueing. So the p95 is reached by bounding what can go wrong: per-stage deadlines,
+a local synthesiser whose tail is a CPU rather than a network, and something audible
+guaranteed by a deadline at 600ms.
+
+Three of the four optimised terms now have no network on the critical path at all,
+which is the p95 column deciding the design. It is also the argument for M1.8's
+local synthesis, which looked marginal on the median and is the fattest remaining
+tail.
+
+**The measurement rule matters more than the mechanism.** A filler acknowledgement
+is audio, and counting it as time to first audio would let any system hit any target
+by learning to say "achha" quickly. `TurnClock` keeps two numbers, time to first
+audio of any kind and time to first audio of the answer, and every target is judged
+against the second. A configuration that met p95 by talking over the gap publishes
+its filler rate beside the number. The tests mutate all three of those guards,
+because this is the exact shape of dishonesty the project was built to avoid and it
+would be trivially easy to commit here.
+
+**Alternatives considered:** treating the deadline as a cancellation, so a late
+answer is abandoned and only the filler is spoken. Rejected because it trades a slow
+answer for none, and a listener who hears an acknowledgement and then nothing has
+been failed worse than one who waits. Cancelling the pending first chunk when the
+deadline passes, rejected for the same reason at a smaller scale: it closes the
+generator mid-flight and throws away work already done, which is the opposite of
+what a deadline is for.
+
+**Consequences:** 150ms of headroom separates the p95 estimate of 650ms from the
+800ms floor, and one retained network round trip would spend it. The budget is
+therefore a claim to be falsified rather than a plan, and if measurement puts p95
+above 800ms the finding is that a free-tier cascade cannot hold a tail that tight.
+That gets reported as the result. `FIRST_AUDIO_P50_MS` and `FIRST_AUDIO_P95_MS` live
+in `vaani/budget.py` so a bench script and a CI assertion read the same numbers, and
+a test pins them to the published figures so moving a target is a visible change
+rather than an edit in one file.
+
 ## 2026-08-12: A fresh partial becomes the final transcript, and the tail decides
 
 **Context:** SPEC's budget allows 100ms for the STT tail after the endpoint, on the

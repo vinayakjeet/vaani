@@ -1,0 +1,179 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+
+import pytest
+
+from vaani.budget import (
+    FIRST_AUDIO_P50_MS,
+    FIRST_AUDIO_P95_MS,
+    TurnClock,
+    speak_within,
+)
+
+
+async def prompt_answer() -> AsyncIterator[bytes]:
+    yield b"answer-1"
+    yield b"answer-2"
+
+
+def slow_answer(delay: float):
+    async def produce() -> AsyncIterator[bytes]:
+        await asyncio.sleep(delay)
+        yield b"answer-1"
+        yield b"answer-2"
+
+    return produce
+
+
+async def filler() -> AsyncIterator[bytes]:
+    yield b"achha"
+
+
+async def slow_silence() -> AsyncIterator[bytes]:
+    """Late and then empty, which is the case that matters. An answer that is empty
+    immediately beats the deadline and no filler is due."""
+    await asyncio.sleep(0.05)
+    return
+    yield b""  # pragma: no cover
+
+
+async def test_a_prompt_answer_needs_no_filler() -> None:
+    clock = TurnClock()
+
+    heard = [chunk async for chunk in speak_within(prompt_answer(), filler, clock)]
+
+    assert heard == [b"answer-1", b"answer-2"]
+    assert not clock.filler_spoken
+
+
+async def test_a_prompt_answer_reports_the_same_number_twice() -> None:
+    """So a turn that met the target honestly does not leave the headline field
+    empty, which a reader would have to interpret."""
+    clock = TurnClock()
+
+    async for _chunk in speak_within(prompt_answer(), filler, clock):
+        pass
+
+    assert clock.first_audio_ms == clock.first_answer_audio_ms
+
+
+async def test_a_late_answer_is_covered_by_filler_and_then_arrives() -> None:
+    """The answer is never abandoned. A listener hears an acknowledgement and then
+    the reply, which is what a person does when they need a moment. Cancelling would
+    trade a slow answer for none."""
+    clock = TurnClock()
+
+    heard = [
+        chunk
+        async for chunk in speak_within(
+            slow_answer(0.05)(), filler, clock, deadline_ms=10
+        )
+    ]
+
+    assert heard == [b"achha", b"answer-1", b"answer-2"]
+    assert clock.filler_spoken
+
+
+async def test_filler_does_not_count_as_the_answer() -> None:
+    """The integrity rule, as a test.
+
+    Counting filler as time to first audio would let any system hit any target by
+    learning to say "achha" quickly. The headline number is the answer's, and the
+    two have to differ when filler was spoken or the accounting is not measuring
+    what it claims.
+    """
+    clock = TurnClock()
+
+    async for _chunk in speak_within(slow_answer(0.05)(), filler, clock, deadline_ms=10):
+        pass
+
+    assert clock.first_audio_ms is not None
+    assert clock.first_answer_audio_ms is not None
+    assert clock.first_audio_ms < clock.first_answer_audio_ms
+
+
+async def test_the_target_is_judged_against_the_answer_not_the_filler() -> None:
+    """A configuration that met p95 by talking over the gap has not met it."""
+    clock = TurnClock()
+    clock.first_audio_ms = 50.0
+    clock.first_answer_audio_ms = 2_000.0
+    clock.filler_spoken = True
+
+    assert not clock.met_p50_target
+    assert not clock.met_p95_floor
+
+
+def test_the_targets_are_the_published_ones() -> None:
+    """Pinned so a bench script and a regression assertion cannot drift from SPEC,
+    and so moving a target is a visible change rather than an edit in one file."""
+    assert FIRST_AUDIO_P50_MS == 500
+    assert FIRST_AUDIO_P95_MS == 800
+
+
+def test_a_turn_with_no_audio_meets_nothing() -> None:
+    """An unmeasured turn must not read as a passing one. `None` compares as
+    smaller than anything if the check is written carelessly."""
+    clock = TurnClock()
+
+    assert not clock.met_p50_target
+    assert not clock.met_p95_floor
+
+
+async def test_an_answer_that_produces_nothing_is_not_covered_by_the_filler() -> None:
+    """Whatever the acknowledgement said, the turn has no reply in it. Letting the
+    filler stand in for one is how a broken pipeline sounds healthy."""
+    clock = TurnClock()
+
+    heard = [chunk async for chunk in speak_within(slow_silence(), filler, clock, deadline_ms=10)]
+
+    assert heard == [b"achha"]
+    assert clock.first_answer_audio_ms is None
+    assert not clock.met_p95_floor
+
+
+async def test_the_pending_answer_is_not_cancelled_by_the_deadline() -> None:
+    """Cancelling `anext` would close the generator mid-flight and throw away work
+    already done, which is the opposite of what a deadline is for."""
+    closed = False
+
+    async def watched() -> AsyncIterator[bytes]:
+        nonlocal closed
+        try:
+            await asyncio.sleep(0.05)
+            yield b"answer-1"
+        finally:
+            closed = True
+
+    clock = TurnClock()
+    heard = [chunk async for chunk in speak_within(watched(), filler, clock, deadline_ms=10)]
+
+    assert heard == [b"achha", b"answer-1"]
+    assert closed
+
+
+async def test_a_failing_answer_still_raises_after_filler() -> None:
+    """The filler must not swallow a failure. A turn that says "achha" and then
+    nothing is the silence SPEC's degradation rules exist to prevent."""
+
+    async def broken() -> AsyncIterator[bytes]:
+        await asyncio.sleep(0.01)
+        raise RuntimeError("llm died")
+        yield b""  # pragma: no cover
+
+    clock = TurnClock()
+
+    with pytest.raises(RuntimeError):
+        async for _chunk in speak_within(broken(), filler, clock, deadline_ms=1):
+            pass
+
+
+async def test_the_clock_measures_forward() -> None:
+    """Guards every assertion above, which are all differences between two readings
+    of it. A clock returning a constant would satisfy most of them."""
+    clock = TurnClock()
+    first = clock.elapsed_ms()
+    await asyncio.sleep(0.01)
+
+    assert clock.elapsed_ms() > first
