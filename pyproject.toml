@@ -12,9 +12,9 @@ dependencies = [
     "httpx>=0.27",
     "tenacity>=9.0",
     "pyyaml>=6.0",
-    "opentelemetry-sdk>=1.28",
-    "opentelemetry-exporter-otlp-proto-http>=1.28",
-    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    # No opentelemetry here. Nothing in this repo imports it: Spanlight declares
+    # the SDK and the OTLP exporter it needs, and the FastAPI instrumentation the
+    # chassis listed was imported nowhere at all.
     "spanlight",
     "edge-tts>=6.1",
     "websockets>=13.0",

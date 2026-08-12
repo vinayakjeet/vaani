@@ -1,26 +1,39 @@
 from __future__ import annotations
 
+import spanlight
 from fastapi import FastAPI
 
 from app.config import get_settings
 from app.logging_config import configure_logging
 from app.middleware import RequestContextMiddleware
-from app.otel_bootstrap import setup_otel
 from app.routers import demo, health, voice
+
+SERVICE_NAME = "vaani"
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    app = FastAPI(title="vaani", version="0.1.0")
+    # Spanlight owns tracing setup. The chassis `otel_bootstrap` this replaces
+    # passed the endpoint straight to the exporter, which appends nothing, so
+    # every span went to a URL that does not accept spans. It also never
+    # percent-decoded the auth header, earning a 401 that reads like a bad
+    # credential. Neither is visible from inside the process: the log said
+    # enabled either way. Three sibling repos carried this and none had ever
+    # exported a span.
+    spanlight.init(
+        SERVICE_NAME,
+        endpoint=settings.otel_exporter_otlp_endpoint,
+        headers=settings.otel_exporter_otlp_headers,
+    )
+
+    app = FastAPI(title=SERVICE_NAME, version="0.1.0")
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(health.router)
     app.include_router(demo.router)
     app.include_router(voice.router)
-
-    setup_otel(app, settings.otel_exporter_otlp_endpoint, settings.otel_exporter_otlp_headers)
 
     return app
 

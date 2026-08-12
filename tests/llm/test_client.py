@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
+
 import pytest
-from structlog.testing import capture_logs
 
 import llm.providers.registry as registry_module
+from app.logging_config import configure_logging
 from llm.client import ChatClient
 from llm.throttle import InMemoryThrottle
 from llm.types import ChatMessage, ChatResponse, ProviderError, RateLimitError
@@ -94,12 +96,28 @@ async def test_complete_waits_for_throttle_before_calling_provider(monkeypatch, 
     assert stub.calls == 1
 
 
-async def test_complete_logs_cost_and_token_fields():
-    with capture_logs() as logs:
-        client = ChatClient()
-        await client.complete("mock", [ChatMessage(role="user", content="hello there")])
+async def test_complete_logs_cost_and_token_fields(capsys):
+    """Read the rendered line rather than intercepting the processor chain.
 
-    call_events = [entry for entry in logs if entry.get("event") == "llm.call"]
+    `structlog.testing.capture_logs` cannot see a logger that has already logged
+    once, because `configure_logging` sets `cache_logger_on_first_use`. So this
+    test only passed while `tests/app/test_demo_route.py` was failing: that 500
+    meant `llm.call` had never been emitted and the client's logger was still
+    uncached. Fixing the other test broke this one, which is to say this one was
+    green because that one was red.
+
+    Asserting on the rendered output carries no such coupling, and it proves the
+    fields survive JSON rendering rather than that they reached a processor.
+    """
+    configure_logging("INFO")
+
+    client = ChatClient()
+    await client.complete("mock", [ChatMessage(role="user", content="hello there")])
+
+    lines = capsys.readouterr().out.splitlines()
+    call_events = [
+        json.loads(line) for line in lines if line.startswith("{") and "llm.call" in line
+    ]
     assert len(call_events) == 1
     entry = call_events[0]
     for field in ("provider", "model", "tokens_in", "tokens_out", "cost_usd", "latency_ms"):

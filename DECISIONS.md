@@ -12,6 +12,36 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-12: The chassis bootstrap is deleted, not wrapped
+
+**Context:** `pyproject.toml` declared Spanlight from the first commit, and
+`app/main.py` was still calling the inherited `app/otel_bootstrap.py`. Nothing
+called `spanlight.init()`. The bootstrap carried both faults Spanlight recorded
+and fixed in August: it passed the endpoint straight to `OTLPSpanExporter`, which
+appends nothing, so every span went to a URL that does not accept spans, and it
+never percent-decoded `OTEL_EXPORTER_OTLP_HEADERS`, so Grafana's
+`Authorization=Basic%20...` went out literally and earned a 401 that reads like a
+bad credential. This repo was the fourth copy.
+
+**Decision:** delete the module and call `spanlight.init()` from `create_app`.
+Vaani also stops declaring opentelemetry at all, since nothing here imports it:
+Spanlight declares the SDK and the OTLP exporter, and the FastAPI instrumentation
+the chassis listed was imported nowhere.
+
+**Alternatives considered:** keeping both and having `setup_otel` delegate,
+rejected for the reason Spanlight rejected it. OpenTelemetry ignores a second
+`set_tracer_provider` and only logs about it, so whichever ran first would win
+silently and the loser would export nothing while appearing configured. Fixing
+the two bugs in place, rejected because it makes a fifth copy of code that now has
+a maintained home.
+
+**Consequences:** the deployed backend has been exporting nothing since M0.5, so
+no trace from before this commit exists and the M1 demo checkpoint has to be
+re-run. HTTP server spans go away with `FastAPIInstrumentor`, which is no loss:
+the traffic is a WebSocket and SPEC's span tree is session, turn, then stage. The
+deletion is held by a test rather than a comment, because a fork is how this came
+back the last three times.
+
 ## 2026-08-12: A full stop after a number ends a sentence when the number is long
 
 **Context:** sentence segmentation suppressed every full stop that followed a
