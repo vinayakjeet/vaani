@@ -46,6 +46,7 @@ CONTRACT: dict[str, frozenset[str]] = {
             "vaani.stt.partials",
             "vaani.stt.final_chars",
             "vaani.stt.streaming",
+            "vaani.stt.final_reused",
         }
     ),
     STT_REQUEST: frozenset({"vaani.stt.index", "vaani.stt.audio_ms"}),

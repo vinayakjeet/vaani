@@ -12,6 +12,44 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-12: A fresh partial becomes the final transcript, and the tail decides
+
+**Context:** SPEC's budget allows 100ms for the STT tail after the endpoint, on the
+reasoning that streaming means the final partial already exists when the endpoint
+fires. `ChunkedStt` did the opposite: it always transcribed the whole utterance
+again after the frame stream ended. On the free stack that is a full request over
+the whole utterance, roughly 400ms on the critical path, to arrive at a string it
+usually already had. Committed code contradicting a committed number.
+
+**Decision:** the final reuses the last partial when the audio not yet transcribed
+is no longer than `reuse_final_within_ms`, defaulting to 700ms, which is the
+trailing silence that ends a turn. The frame stream ends at the endpoint, so that
+tail is by construction the silence which caused the endpoint: speech stopped
+before it and nothing was said during it, so the last partial contains every word
+spoken. A longer tail means partials fell behind or failed, the words at the end
+were never transcribed, and the request is real work rather than a duplicate.
+
+The partial interval also drops from 600ms to 400ms. A fresher last partial is what
+makes reuse fire, and on this stack each partial is a request, so the interval is
+the dial between provider spend and how often the tail term is paid.
+
+**Alternatives considered:** always transcribing the final, which is what shipped
+and cannot meet the budget. Always reusing the last partial, rejected because a
+stack whose partials failed would silently answer a question it never heard the end
+of. Taking a partial at the endpoint instead of on a timer, which is the right
+answer and needs the endpointer to signal the recogniser; that coupling is a wiring
+change, and `reuse_final_within_ms` is the seam it would use.
+
+**Consequences:** the reused final carries the same `index` as the partial it
+reuses, and two events sharing one index is the honest encoding, since it says no
+further request was made. `vaani.stt.final_reused` is on the stage span so the
+waterfall can separate turns that paid the tail from turns that did not, which
+matters because the two are different latencies and averaging them hides the
+technique. The correctness risk is real and stated: if the endpoint fires while the
+user is still speaking, reuse propagates the truncation instead of catching it, so
+this technique and semantic endpointing share a failure mode and the ablation has to
+report their false-endpoint rate together rather than separately.
+
 ## 2026-08-12: A session is one turn, and stage spans are not tool spans
 
 **Context:** wiring SPEC's span tree turned up two choices that look like details

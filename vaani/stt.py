@@ -103,9 +103,15 @@ class ChunkedStt:
 
     streaming = False
 
-    def __init__(self, transcriber: SttProvider, interval_ms: int = 600) -> None:
+    def __init__(
+        self,
+        transcriber: SttProvider,
+        interval_ms: int = 400,
+        reuse_final_within_ms: int = 700,
+    ) -> None:
         self._transcriber = transcriber
         self._interval_ms = interval_ms
+        self._reuse_final_within_ms = reuse_final_within_ms
         self.name = f"chunked:{transcriber.name}"
 
     async def stream(self, frames: AsyncIterator[bytes]) -> AsyncIterator[Partial]:
@@ -116,6 +122,7 @@ class ChunkedStt:
             buffer = bytearray()
             since_last = 0
             index = 0
+            last_text: str | None = None
 
             async for frame in frames:
                 buffer += frame
@@ -133,18 +140,44 @@ class ChunkedStt:
                     # indistinguishable from one with no partials at all.
                     logger.warning("stt.partial_failed", provider=self.name, index=index)
                     continue
+                last_text = interim.text
                 yield Partial(text=interim.text, final=False, index=index)
 
-            index += 1
-            final = await self._transcriber.transcribe(bytes(buffer))
+            # The whole STT tail term in the latency budget lives here.
+            #
+            # The frame stream ends at the endpoint, so the audio not yet
+            # transcribed is the trailing silence that ended the turn: speech
+            # stopped `since_last` ago and nothing has been said since. When that
+            # tail is no longer than the silence which caused the endpoint, the last
+            # partial already contains every word spoken, and transcribing again
+            # spends a whole request, roughly 400ms on the critical path, to arrive
+            # at the same string. SPEC's budget allows 100ms for this term, and an
+            # unconditional final request cannot meet it.
+            #
+            # A tail longer than that means partials fell behind or failed, so the
+            # words at the end were never transcribed and the request is real work.
+            reused = last_text is not None and since_last <= self._reuse_final_within_ms
+            partials = index
+            if reused:
+                # The same request that produced the last partial, so it keeps that
+                # index. Two events sharing one index is the honest encoding: it says
+                # no further request was made, which is the latency this saves.
+                text = last_text
+            else:
+                index += 1
+                text = (await self._transcriber.transcribe(bytes(buffer))).text
+
             stage.record(
                 **{
-                    "vaani.stt.partials": index - 1,
-                    "vaani.stt.final_chars": len(final.text),
+                    "vaani.stt.partials": partials,
+                    "vaani.stt.final_chars": len(text),
+                    "vaani.stt.final_reused": reused,
                 }
             )
-            logger.info("stt.stream_done", provider=self.name, requests=index)
-            yield Partial(text=final.text, final=True, index=index)
+            logger.info(
+                "stt.stream_done", provider=self.name, requests=index, reused=reused
+            )
+            yield Partial(text=text, final=True, index=index)
 
 
 class GroqWhisper:

@@ -25,7 +25,12 @@ SPEC_TABLE = {
         "vaani.vad.trailing_silence_ms",
         "vaani.vad.aggressiveness",
     },
-    "stt.stream": {"vaani.stt.partials", "vaani.stt.final_chars", "vaani.stt.streaming"},
+    "stt.stream": {
+        "vaani.stt.partials",
+        "vaani.stt.final_chars",
+        "vaani.stt.streaming",
+        "vaani.stt.final_reused",
+    },
     "stt.request": {"vaani.stt.index", "vaani.stt.audio_ms"},
     "llm.generate": {"vaani.llm.rounds", "vaani.llm.first_token_ms"},
     "tts.synthesize": {
