@@ -12,6 +12,54 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-12: A stream is retried only until its first event
+
+**Context:** `ChatClient.complete` is wrapped in `retry_with_backoff`, and the
+streamed path cannot be. A decorator sees one call succeed or fail, while a
+stream stops being repeatable the moment a token is handed downstream: by then
+the caller may already have synthesised it and put it in somebody's ear.
+Reconnecting would either repeat the opening words or splice two different
+replies into one sentence.
+
+**Decision:** streaming lives in the chassis `llm/` rather than in `vaani/`, so
+Tollgate inherits it and Vaani does not duplicate the throttle gate and the
+retry loop. `ChatClient.stream` runs its own loop instead of the decorator:
+before the first event a failure is transient and retried, and after it the error
+propagates and the tokens already delivered stay delivered. The 429 gate stays
+inside the loop for the reason the unstreamed path records. `backoff_seconds` in
+`llm/retry.py` mirrors tenacity's curve so the two paths wait the same way.
+
+Providers assemble tool-call fragments rather than forwarding them. Arguments
+arrive a few characters at a time, the last frame is often a closing brace, and
+every caller left to reassemble them would get the indexing wrong differently.
+`stream_options: {"include_usage": true}` is requested, because a streamed
+response omits usage otherwise and the ablation would compare a measured
+unstreamed baseline against a column with no tokens and no cost in it.
+
+**Alternatives considered:** a Vaani-local streaming client, rejected because it
+would reimplement the throttle, the retry, and the retry-after parsing, which is
+where the double-counting and invisible-retry bugs came from in Spanlight.
+Retrying mid-stream and discarding the tokens already sent, rejected because they
+are not recoverable: playback is downstream and audio cannot be un-said.
+Buffering the stream until it completes so it stays retryable, which is the
+unstreamed path with extra steps and gives up the entire point.
+
+**Consequences:** the streamed path carries a weaker guarantee than the
+unstreamed one, and that difference is a row the ablation write-up owes the
+reader rather than a detail. A mid-stream failure surfaces as a half-spoken reply
+until M3.2 gives it a degradation path. `llm/client.py` and
+`llm/providers/base.py` change for all eleven forks, which is the cost the
+chassis placement buys, so `complete` is untouched and the streaming tests
+mutation-checked in both directions. `ChatMessage` gained optional `tool_calls`
+and `tool_call_id`, serialised with `exclude_none`, so a provider that has never
+seen those fields receives the payload it did before.
+
+One test was green for the wrong reason and worth recording. The check that a
+4xx body is read before the status is mapped passed with the `aread` call
+deleted, because `httpx.MockTransport` with a bytes body hands back a response
+that is already buffered. It only became a real test once the fake body was an
+async iterator, which is what a live connection gives you.
+
 ## 2026-08-12: The tool stub answers indicatively and refuses rather than guessing
 
 **Context:** M1.3 needs the Dastavez tools to exist before Dastavez does. A stub

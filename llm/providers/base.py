@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Protocol
 
 import httpx
+import structlog
 
 from llm.types import (
     ChatMessage,
@@ -15,7 +16,14 @@ from llm.types import (
     ProviderConfigError,
     ProviderError,
     RateLimitError,
+    StreamCompleted,
+    StreamEvent,
+    TextChunk,
+    ToolCall,
+    ToolCallsRequested,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 class Provider(Protocol):
@@ -29,6 +37,10 @@ class Provider(Protocol):
     async def chat_completion(
         self, messages: list[ChatMessage], **kwargs: object
     ) -> ChatResponse: ...
+
+    def stream_completion(
+        self, messages: list[ChatMessage], **kwargs: object
+    ) -> AsyncIterator[StreamEvent]: ...
 
 
 def default_usage_parser(payload: dict) -> tuple[int | None, int | None]:
@@ -180,7 +192,7 @@ class OpenAICompatibleProvider:
         resolved_model = model or self._default_model
         payload = {
             "model": resolved_model,
-            "messages": [m.model_dump() for m in messages],
+            "messages": [m.model_dump(exclude_none=True) for m in messages],
             **kwargs,
         }
         headers = {"Authorization": f"Bearer {api_key}"}
@@ -197,14 +209,7 @@ class OpenAICompatibleProvider:
             if self._client is None:
                 await client.aclose()
 
-        if resp.status_code == 429:
-            raise RateLimitError(
-                f"{self.name}: rate limited", retry_after=parse_retry_after(resp)
-            )
-        if resp.status_code >= 500:
-            raise ProviderError(f"{self.name}: server error {resp.status_code}")
-        if resp.status_code >= 400:
-            raise ProviderClientError(f"{self.name}: client error {resp.status_code}: {resp.text}")
+        self._raise_for_status(resp)
 
         data = resp.json()
         text = data["choices"][0]["message"]["content"]
@@ -214,6 +219,143 @@ class OpenAICompatibleProvider:
             text=text,
             provider=self.name,
             model=resolved_model,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=self._cost_usd(tokens_in, tokens_out),
+        )
+
+    def _raise_for_status(self, resp: httpx.Response) -> None:
+        """Map a response status onto the exception taxonomy.
+
+        Only safe once the body has been read. A streamed response has to be read
+        explicitly before `.text` and `.json()` exist, and `parse_retry_after`
+        needs the body to find the delay Gemini puts there instead of in a header.
+        """
+        if resp.status_code == 429:
+            raise RateLimitError(
+                f"{self.name}: rate limited", retry_after=parse_retry_after(resp)
+            )
+        if resp.status_code >= 500:
+            raise ProviderError(f"{self.name}: server error {resp.status_code}")
+        if resp.status_code >= 400:
+            raise ProviderClientError(f"{self.name}: client error {resp.status_code}: {resp.text}")
+
+    async def stream_completion(
+        self, messages: list[ChatMessage], model: str | None = None, **kwargs: object
+    ) -> AsyncIterator[StreamEvent]:
+        """Server-sent events from an OpenAI-compatible endpoint, as typed events.
+
+        Text arrives as it is generated, which is the whole point: synthesis starts
+        on the first sentence rather than the whole reply. Tool-call arguments
+        arrive in fragments and are assembled here, so a caller never sees half a
+        JSON object.
+        """
+        api_key = self._require_api_key()
+        resolved_model = model or self._default_model
+        payload = {
+            "model": resolved_model,
+            "messages": [m.model_dump(exclude_none=True) for m in messages],
+            "stream": True,
+            # Streamed responses omit usage unless it is asked for, and without it
+            # a streamed call reports no tokens and no cost. The ablation compares
+            # a streamed configuration against an unstreamed baseline, so a blank
+            # cost column on one side would not be a missing number, it would be a
+            # comparison nobody can read. Providers that reject the field surface a
+            # 4xx with the body attached, which is diagnosable; pass
+            # `stream_options=None` to drop it for one that does.
+            "stream_options": {"include_usage": True},
+            **kwargs,
+        }
+        if payload.get("stream_options") is None:
+            payload.pop("stream_options", None)
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        client = self._client or httpx.AsyncClient(
+            base_url=self._base_url, timeout=DEFAULT_TIMEOUT
+        )
+        try:
+            try:
+                async with client.stream(
+                    "POST", "/chat/completions", json=payload, headers=headers
+                ) as resp:
+                    if resp.status_code >= 400:
+                        # Nothing has been read yet, and both the status mapping
+                        # and the retry-after hint need the body.
+                        await resp.aread()
+                        self._raise_for_status(resp)
+
+                    async for event in self._events(resp):
+                        yield event
+            except httpx.RequestError as exc:
+                raise ProviderError(f"{self.name}: network error: {exc}") from exc
+        finally:
+            if self._client is None:
+                await client.aclose()
+
+    async def _events(self, resp: httpx.Response) -> AsyncIterator[StreamEvent]:
+        fragments: dict[int, dict[str, str]] = {}
+        finish_reason: str | None = None
+        tokens_in: int | None = None
+        tokens_out: int | None = None
+
+        async for raw in resp.aiter_lines():
+            line = raw.strip()
+            # Blank lines separate events and a leading colon is a keepalive
+            # comment, which is how a provider holds the connection open while a
+            # reasoning model thinks.
+            if not line or line.startswith(":") or not line.startswith("data:"):
+                continue
+
+            data = line.removeprefix("data:").strip()
+            if data == "[DONE]":
+                break
+
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                # One unreadable frame does not justify failing a turn that is
+                # already audible, so it is skipped and counted rather than
+                # raised. Logged without the payload: a frame carries reply text,
+                # which is about a real person's eligibility. M3.2 is where this
+                # becomes a metric with a reason label.
+                logger.warning("provider.stream.unreadable_frame", provider=self.name)
+                continue
+
+            if chunk.get("usage"):
+                tokens_in, tokens_out = self._usage_parser(chunk)
+
+            for choice in chunk.get("choices") or []:
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+
+                delta = choice.get("delta") or {}
+                if content := delta.get("content"):
+                    yield TextChunk(text=content)
+
+                for fragment in delta.get("tool_calls") or []:
+                    slot = fragments.setdefault(
+                        fragment.get("index", 0), {"id": "", "name": "", "arguments": ""}
+                    )
+                    if identifier := fragment.get("id"):
+                        slot["id"] = identifier
+                    function = fragment.get("function") or {}
+                    if name := function.get("name"):
+                        slot["name"] = name
+                    # Arguments are concatenated, never replaced. A provider sends
+                    # them a few characters at a time and the last fragment is
+                    # usually just a closing brace.
+                    slot["arguments"] += function.get("arguments") or ""
+
+        if fragments:
+            yield ToolCallsRequested(
+                calls=[
+                    ToolCall(id=slot["id"], name=slot["name"], arguments=slot["arguments"])
+                    for _, slot in sorted(fragments.items())
+                ]
+            )
+
+        yield StreamCompleted(
+            finish_reason=finish_reason,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             cost_usd=self._cost_usd(tokens_in, tokens_out),

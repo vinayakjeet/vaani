@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 
 import structlog
 
 from llm.providers.registry import get_provider
-from llm.retry import retry_with_backoff
+from llm.retry import backoff_seconds, retry_with_backoff
 from llm.throttle import InMemoryThrottle, ThrottleBackend
-from llm.types import ChatMessage, ChatResponse, RateLimitError
+from llm.types import (
+    ChatMessage,
+    ChatResponse,
+    ProviderError,
+    RateLimitError,
+    StreamEvent,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -68,3 +75,58 @@ class ChatClient:
             latency_ms=response.latency_ms,
         )
         return response
+
+    async def stream(
+        self, provider: str, messages: list[ChatMessage], **kwargs: object
+    ) -> AsyncIterator[StreamEvent]:
+        """Token events as they arrive, retried only until the first one.
+
+        The retry rule is the whole reason this does not use
+        `retry_with_backoff`. A decorator sees one call succeed or fail, but a
+        stream stops being repeatable the moment a token has been handed
+        downstream: by then the caller may already be synthesising it, and
+        reconnecting would either say the opening words twice or splice two
+        different replies into one sentence. So a failure before the first event
+        is transient and retried, and a failure after it propagates. That is a
+        weaker guarantee than the unstreamed path gives, and it is the honest one.
+
+        `time_to_first_event_ms` is logged rather than only the total. Wrapping a
+        stream and reporting its duration measures how long the model talked for,
+        which is not the number a listener experiences, and reporting only the
+        total is how a streamed call and an unstreamed one come out looking alike.
+        """
+        provider_impl = get_provider(provider)
+        start = time.monotonic()
+        attempt = 0
+
+        while True:
+            attempt += 1
+            # Same reasoning as `complete`: the gate belongs inside the loop, so a
+            # 429 that asked for forty seconds is honoured by the next attempt
+            # instead of being retried under exponential backoff that caps lower.
+            wait = await self._throttle.is_open(provider)
+            if wait > 0:
+                await asyncio.sleep(wait)
+
+            started = False
+            try:
+                async for event in provider_impl.stream_completion(messages, **kwargs):
+                    if not started:
+                        started = True
+                        logger.info(
+                            "llm.stream.first_event",
+                            provider=provider,
+                            time_to_first_event_ms=(time.monotonic() - start) * 1000,
+                            attempts=attempt,
+                        )
+                    yield event
+                return
+            except RateLimitError as exc:
+                await self._throttle.trip(provider, exc.retry_after)
+                if started or attempt >= self._max_retry_attempts:
+                    raise
+            except ProviderError:
+                if started or attempt >= self._max_retry_attempts:
+                    raise
+
+            await asyncio.sleep(backoff_seconds(attempt))
