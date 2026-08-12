@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import structlog
 
@@ -50,15 +50,26 @@ class StreamedTurn:
         self._provider = provider
         self._max_tool_rounds = max_tool_rounds
 
-    async def run(self, question: str) -> AsyncIterator[str]:
+    async def run(
+        self, question: str, still_current: Callable[[], bool] | None = None
+    ) -> AsyncIterator[str]:
+        """Stream the reply, abandoning the turn if it stops being the current one.
+
+        `still_current` is asked before a tool result is applied. SPEC S4: a tool
+        result from an interrupted turn must be discarded rather than folded into
+        the next one, because an answer built on a question nobody asked is worse
+        than no answer, and it arrives sounding just as confident.
+        """
         # One span for the turn's generation, not one per round, because the
         # listener waited for all of them. Time to first token is an event on it
         # rather than the duration, which is how long the model talked for.
         with stage_span(LLM_GENERATE, **{"gen_ai.system": self._provider}) as stage:
-            async for chunk in self._rounds(question, stage):
+            async for chunk in self._rounds(question, stage, still_current):
                 yield chunk
 
-    async def _rounds(self, question: str, stage) -> AsyncIterator[str]:
+    async def _rounds(
+        self, question: str, stage, still_current: Callable[[], bool] | None
+    ) -> AsyncIterator[str]:
         messages = [
             ChatMessage(role="system", content=SYSTEM_PROMPT),
             ChatMessage(role="user", content=question),
@@ -108,6 +119,14 @@ class StreamedTurn:
                 logger.warning("turn.tool_rounds_exhausted", rounds=round_index + 1)
                 stage.record(**{"vaani.llm.rounds": round_index + 1})
                 yield COULD_NOT_CHECK
+                return
+
+            if still_current is not None and not still_current():
+                # Interrupted while the tools were in flight. The results are
+                # dropped rather than applied, and nothing further is spoken: the
+                # new turn is already listening.
+                logger.info("turn.abandoned", round=round_index)
+                stage.record(**{"vaani.llm.rounds": round_index + 1})
                 return
 
             messages.append(_assistant_asking_for(requested))
