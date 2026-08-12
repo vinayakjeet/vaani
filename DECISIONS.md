@@ -12,6 +12,45 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-12: The tool stub answers indicatively and refuses rather than guessing
+
+**Context:** M1.3 needs the Dastavez tools to exist before Dastavez does. A stub
+that returns plausible eligibility verdicts is trivial to write, and that is the
+problem: this pipeline speaks its answers aloud to somebody asking whether they
+qualify for a welfare payment, and a threshold invented for a unit test is
+indistinguishable in the ear from a sourced one.
+
+**Decision:** `vaani/tools.py` holds five schemes with one or two thresholds
+each. Every result carries `indicative=True`, and a scheme with no thresholds
+recorded raises rather than returning eligible, since `all([])` is true and "we
+have nothing to check" is not "you qualify". An unknown scheme id and an unknown
+tool name both raise instead of returning an empty result, because an empty result
+teaches the model the call succeeded. Arguments are validated at this boundary
+with pydantic and `extra="forbid"`, and a rejection names the field and the rule
+but never the value, which is an applicant's income.
+
+The verdict is computed from the comparisons rather than from the sentences they
+produce. The first version derived it by testing whether the word "within"
+appeared in prose formatted three lines earlier, so rewording a message would
+have flipped eligibility answers with the whole suite still green.
+
+**Alternatives considered:** richer fixture data covering thirty schemes,
+rejected because volume is what makes a stub start looking like a source of
+truth, and five exercise every branch the pipeline has. A `confidence` derived
+from how many rules matched, rejected because it would be read as a probability;
+it is a constant and a test pins it as one. Returning structured errors instead
+of raising, which would let the model correct itself inside the turn, rejected
+for now because retrying a tool call in a loop is what Spanlight's loop detector
+exists to catch, and the turn-level handling belongs to M3.5.
+
+**Consequences:** the module is `vaani/tools.py` rather than the `vaani/tools/`
+package SPEC's architecture table names, matching the flat layout the rest of
+`vaani/` already uses. The README has to state that eligibility answers are
+indicative and that Dastavez replaces the data, since the demo will be spoken to
+by people who did not read this file. The threshold matrix in the tests covers
+each limit exactly and one either side: a matrix of round numbers passed an
+off-by-one comparison, because the edge is the only place `<=` and `<` differ.
+
 ## 2026-08-12: The chassis bootstrap is deleted, not wrapped
 
 **Context:** `pyproject.toml` declared Spanlight from the first commit, and
