@@ -117,11 +117,15 @@ Blueprint 3.1: an `interrupted_at` marker is "your best script-optimisation sign
 record that a turn was interrupted, not where. Cheap to add, and it is analysis the ablation
 can use.
 
-### 9. Prompt caching, and prompt order
+### 9. Prompt caching, and prompt order (M1.14)
 
 Blueprint 3.2 layer 5: pin the static prefix and put volatile state after it, for 30 to 60%
 off time to first token. Our system prompt is static and sits first already, so this is a
 provider-support question rather than a redesign, and it is measurable either way.
+
+Answered in the third pass: Groq does it automatically. Tracked as **M1.14**. An earlier version
+of this section called it M1.9, which is a different and already-finished item, and no task
+existed at all until a backlog audit found the gap.
 
 ### 10. A real VAD instead of frame energy
 
