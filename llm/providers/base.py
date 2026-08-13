@@ -297,6 +297,7 @@ class OpenAICompatibleProvider:
         finish_reason: str | None = None
         tokens_in: int | None = None
         tokens_out: int | None = None
+        terminated = False
 
         async for raw in resp.aiter_lines():
             line = raw.strip()
@@ -308,6 +309,7 @@ class OpenAICompatibleProvider:
 
             data = line.removeprefix("data:").strip()
             if data == "[DONE]":
+                terminated = True
                 break
 
             try:
@@ -345,6 +347,18 @@ class OpenAICompatibleProvider:
                     # them a few characters at a time and the last fragment is
                     # usually just a closing brace.
                     slot["arguments"] += function.get("arguments") or ""
+
+        if not terminated and finish_reason is None:
+            # The connection ended mid-stream with no terminator and no finish
+            # reason, so the reply is truncated. Saying nothing here would hand the
+            # caller a `StreamCompleted` and let half an answer pass for a whole one,
+            # which is the failure the fault helper was built to find: a dropped
+            # stream and a finished one looked identical.
+            #
+            # The text already yielded stays yielded. It has been spoken by now and
+            # cannot be un-said; what must not happen is the caller believing there
+            # was no more.
+            raise ProviderError(f"{self.name}: stream ended without a terminator")
 
         if fragments:
             yield ToolCallsRequested(
