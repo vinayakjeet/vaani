@@ -306,3 +306,118 @@ The direction of the whole field is that **VAD plus a silence timer is the thing
 replaced**, and our `completeness.py` word-order rule is a hand-written approximation of a
 model that now exists at 8MB. The rule is still worth keeping as the ablation's baseline arm,
 which is exactly what SPEC wants, but it should not be the only arm.
+
+
+## Third pass, 2026-08-13: a wider web sweep
+
+Searched rather than assumed. Fourteen papers and thirteen tools below, with the four findings
+that change the plan first.
+
+### Finding 1: Piper is the wrong local synthesiser, and M1.8 was built on a false premise
+
+M1.8 exists to put a local CPU synthesiser on the critical path so the TTS tail stops being a
+network tail. Measured benchmarks say Piper is **1510ms to first audio with a 2.6GB peak**,
+which is worse than the hosted voice it was meant to replace.
+
+The right model is **Kokoro**: 82M parameters, **97ms time to first byte** on CPU baseline, RTF
+0.03 on GPU, and it is consistently the lowest first-audio latency across GPU tiers in
+Picovoice's and CodeSOTA's comparisons. **Orpheus** sits at 187ms with higher fidelity.
+
+So the technique is right and the model was wrong. Had we built M1.8 as written it would have
+made p95 worse and we would have concluded local synthesis does not help.
+
+### Finding 2: SPEC A7 is answerable, with a real measured number
+
+A7 says the 1.4 to 1.7 second industry median is uncited and must be sourced or dropped.
+Openbenchmarks publishes **time to first audio byte measured from the call's own audio across
+five commercial platforms over 2078 usable turns**, lowest median **1296ms (Telnyx)**, with
+ElevenLabs, Bland, Vapi and Retell alongside. That is a dated, first-party-measured,
+reproducible figure rather than a vendor claim, and it is the comparison the chart should use.
+
+It also reframes our target honestly: p50 under 500ms would be roughly **2.6 times faster than
+the best measured commercial median**, which is a strong claim and should make us more
+suspicious of our own numbers, not less. Their measurement includes PSTN transport we do not
+pay, so the comparison must state both clocks.
+
+### Finding 3: Groq prompt caching is automatic, so M1.9 is already half done
+
+Prompt caching on GroqCloud applies to all requests to supported models with **no code changes
+and no extra fee**, cuts latency and input cost by about **50% on the cached prefix**, and
+expires after two hours of disuse. Our system prompt is static and already sits first, which is
+the ordering that makes a prefix cacheable, so the remaining work is measurement rather than
+design.
+
+### Finding 4: barge-in should be stopped in the browser, not on the server
+
+X-Talk describes a **VAD-driven preemption loop that pauses client playback the moment speech is
+detected**, before any server decision. Our barge-in waits for a round trip: detect on the
+server, cancel, stop sending. Pausing locally on the client's own level detector, then letting
+the server confirm or resume, puts a 100ms budget within reach for free and is a dozen lines in
+`web/index.html`.
+
+### Papers
+
+1. **X2-Turn**, arXiv 2608.10878. Dual-head streaming ASR plus turn state, 80ms frames, five
+   states including backchannel and incomplete, 91.0% complete accuracy at 288ms.
+2. **RelayS2S**, arXiv 2603.23346. Dual-path speculative generation, P90 onset 81ms against
+   1091ms cascaded, 99% of cascade quality retained.
+3. **SoulX-Duplug**, arXiv 2603.14877. Plug-in streaming state predictor folding VAD, ASR and
+   turn detection together, because non-streaming turn detection adds latency that grows with
+   input length.
+4. **Multi-Faceted Interactivity Alignment in Full-Duplex Speech Models**, arXiv 2606.11167.
+   Names the four axes of interactivity: pause handling, turn-taking, backchanneling, user
+   interruption. A better checklist for conversational quality than our latency budget.
+5. **Aligning Backchannel and Dialogue Context Representations**, arXiv 2604.16622. Contrastive
+   fine-tuning for backchannel appropriateness.
+6. **RESPOND**, arXiv 2603.21682. Frame-wise prediction of **when and what** backchannel to
+   produce, treating backchannels as opportunities rather than reactions. Its user studies,
+   notably with older adults, report higher perceived naturalness when the agent both allows
+   barge-in and offers timely acknowledgements.
+7. **The Silent Thought**, arXiv 2603.17837. Latent reasoning inside a full-duplex model so it
+   can backchannel and yield gracefully.
+8. **Discourse-Aware Dual-Track Streaming Response**, arXiv 2602.23266.
+9. **Enabling Conversational Behavior Reasoning in Full-Duplex Speech**, arXiv 2512.21706.
+10. **X-Talk**, arXiv 2512.18706. Argues modular speech-to-speech is underrated, and contributes
+    the client-side preemption loop in finding 4.
+11. **Speculative End-Turn Detector**, arXiv 2503.23439.
+12. **On the Landscape of Spoken Language Models**, arXiv 2504.08528. Survey. States that
+    dialogue quality is determined by interactivity measures rather than by transcription
+    accuracy, which is an argument for M4.10.
+13. **VoiceAgentEval**, arXiv 2510.21244. Dual-dimensional benchmark for voice-agent evaluation.
+14. **HiACC**, ScienceDirect S2352340925006109. The first code-switched Hinglish corpus with both
+    adults and children: 3318 adult and 1858 child segments, 5.24 hours, read and spontaneous.
+    Directly relevant to M4.6, and a published comparison point for our own eval set.
+
+Also recorded: code-switched speech raises word error rate by a **relative 30 to 50%** against
+monolingual input, which quantifies SPEC A4's hypothesis rather than leaving it as an assertion.
+
+### Tools
+
+1. **smart-turn** (pipecat-ai, BSD-2). 8M params, 8MB int8, 10 to 100ms CPU, 16kHz mono PCM.
+2. **Silero VAD**. The default in both LiveKit and Pipecat.
+3. **TEN VAD** and **TEN Turn Detection**, shipped separately from the TEN framework.
+4. **Kokoro** TTS. 82M params, 97ms TTFB, RTF 0.03. The local synthesiser M1.8 should use.
+5. **Orpheus** TTS. 187ms TTFB, higher fidelity, also served serverless by Together.
+6. **Piper**. Recorded as the negative result in finding 1.
+7. **IndicWhisper**, Apache 2.0. Whisper fine-tuned on Indic speech.
+8. **Sarvam Saaras V3**. 19.31% WER on the ten most popular IndicVoices languages.
+9. **Sarvam-1**, open weights base model.
+10. **AI4Bharat, Bhasini, IndicTTS**. The Indic open-source stack around Sarvam.
+11. **Pipecat**, **LiveKit Agents**, **Bolna**, **Vocode**, **Dograh**. Orchestration, covered above.
+12. **aiewf-eval**. Open-source voice-agent evaluation covering latency, tool calling,
+    instruction following and knowledge grounding across long multi-turn conversations.
+13. **Openbenchmarks TTFAB**. The external measured baseline in finding 2.
+
+### The framing worth stealing
+
+Two ideas reorder our priorities rather than adding to them.
+
+**Interactivity, not latency, is the quality measure.** The survey and the interactivity-alignment
+paper both define spoken dialogue quality as pause handling, turn-taking, backchanneling and
+graceful interruption. Our entire budget measures one of those four. That is not wrong, it is
+narrow, and M4.10 is the beginning of a fix.
+
+**Backchannels are something to produce, not only to survive.** We have been treating "haan" as
+a thing that must not interrupt us. RESPOND treats the agent emitting a timely acknowledgement as
+a measurable gain in perceived naturalness. That inverts the item and is cheap for us: the filler
+bank already exists.
