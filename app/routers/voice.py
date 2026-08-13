@@ -25,6 +25,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from llm import ChatClient
 from vaani.endpoint import Endpointer
+from vaani.fillers import FillerBank, Purpose, read_chunks
 from vaani.llm_turn import StreamedTurn
 from vaani.pipeline import StreamingPipeline
 from vaani.protocol import (
@@ -152,24 +153,34 @@ def build_backchannel_check(
     return is_backchannel
 
 
-async def speak_filler() -> AsyncIterator[bytes]:
-    """The acknowledgement, from disk, with no provider on the path.
+# One bank per process. The clips do not change between sessions and reading twelve
+# files per turn would put a disk seek on the path that exists to avoid a network one.
+# It holds the last clip played, which is per process rather than per session and is the
+# right scope: a visitor who hears the same phrase the previous visitor heard has not
+# noticed anything, and one who hears it twice running has.
+_fillers = FillerBank()
 
-    Falls back to synthesising it if the asset is missing, so a fork that has not
-    generated one still speaks rather than going silent. That path is slow and says
-    so in the log, because a filler that is late is worse than useless: it spends the
-    deadline it was meant to cover.
+
+async def speak_filler() -> AsyncIterator[bytes]:
+    """An acknowledgement from the bank, from disk, with no provider on the path.
+
+    Never the same one twice running. The deadline is shorter than the endpoint wait, so
+    this fires on most turns, and one clip repeating is how an IVR sounds.
+
+    Falls back to synthesising if the bank is empty, so a fork that has not run
+    `scripts/build_fillers.py` still speaks rather than going silent. That path is slow
+    and says so in the log, because a filler that is late is worse than useless: it
+    spends the deadline it was meant to cover.
     """
-    try:
-        audio = FILLER_AUDIO.read_bytes()
-    except OSError:
-        logger.warning("filler.asset_missing", path=str(FILLER_AUDIO))
+    clip = _fillers.pick(Purpose.THINKING)
+    if clip is None:
+        logger.warning("filler.bank_missing", assets=str(FILLER_AUDIO.parent))
         async for chunk in EdgeTts().synthesize(FILLER_TEXT, VOICE_HI):
             yield chunk
         return
 
-    for start in range(0, len(audio), FILLER_CHUNK_BYTES):
-        yield audio[start : start + FILLER_CHUNK_BYTES]
+    for chunk in read_chunks(clip, FILLER_CHUNK_BYTES):
+        yield chunk
 
 
 @router.websocket("/ws/voice")

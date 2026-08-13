@@ -26,6 +26,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 
 import structlog
 
+from vaani.confirm import needs_confirming, question
 from vaani.endpoint import Endpointer
 from vaani.grounding import check, figures
 from vaani.llm_turn import StreamedTurn
@@ -61,10 +62,15 @@ class StreamingPipeline:
         tts: TtsProvider,
         endpointer: Endpointer | None = None,
         voice: str = VOICE_HI,
+        confirm: bool = True,
     ) -> None:
         self._stt = stt
         self._turn = turn
         self._tts = tts
+        # Whether an unreadable figure costs a turn. On by default and switchable,
+        # because it is an ablation arm rather than a setting: it spends latency to
+        # avoid a wrong eligibility answer, and both sides of that trade get measured.
+        self._confirm = confirm
         # Semantic endpointing on by default here and off in the baseline, which is
         # what keeps the ablation comparing the technique against its absence rather
         # than against itself.
@@ -90,6 +96,18 @@ class StreamingPipeline:
 
         if on_transcript is not None:
             await on_transcript(spoken.text)
+
+        if self._confirm and needs_confirming(spoken):
+            # The turn ends here. Handing an unreadable amount to the model means either
+            # the model normalises it, which is the job `vaani.numerals` exists to take
+            # away, or the figure is simply absent from the prompt and the reply is built
+            # on an assumption nobody made deliberately.
+            ask = question()
+            if on_sentence is not None:
+                await on_sentence(ask)
+            async for chunk in self._tts.synthesize(ask, self._voice, index=1):
+                yield chunk
+            return
 
         # What the reply may state: what the user said, plus whatever the tools return
         # as the turn runs. The set is read per sentence rather than captured now,

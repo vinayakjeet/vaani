@@ -129,16 +129,33 @@ part a listener actually experiences as the agent being slow to react.
 
 **Ends** at the first audio chunk of the turn being written to the socket.
 
-Two numbers are recorded and both are published:
+Three numbers are recorded and all three are published:
 
 - `first_audio_ms`, the first audio of any kind, filler included.
-- `first_answer_audio_ms`, the first audio *of the answer*.
+- `first_answer_audio_ms`, when the answer's first chunk was written to the socket.
+- `first_answer_heard_ms`, when that chunk could reach the ear, which is the send
+  time plus whatever was still queued to play in front of it.
 
-**The headline target is the second one**, and this is the definition most open to
-being quietly gamed. A filler acknowledgement is audio, so a system that counted it
-could hit any target by learning to say "achha" quickly. A configuration that met
-p95 with filler publishes its filler rate beside the number, and a turn covered by
-filler is a turn the answer was late in.
+**The headline target is the third one.** The second looks like the right number and
+is not, and the reason is the filler. `speak_within` yields the whole filler before
+the answer's first chunk, audio leaves the process far faster than real time, and the
+committed clips are between 1.8 and 3.5 seconds of playout. So on a turn where the
+filler fired, `first_answer_audio_ms` records a moment at which the listener is still
+hearing "ek minute". Judging the target on it flatters every such turn, and the filler
+fires on most of them, because the deadline is shorter than the endpoint wait.
+
+That is the same error the clock choice above exists to prevent, one stage further
+down: a measurement taken where the code was convenient rather than where the listener
+is. It is recorded here rather than only fixed, because the fix is a definition.
+
+A transport that cannot estimate playout falls back to the send time, which is known
+to be optimistic and is reported as the send time rather than compared as though it
+were the same number.
+
+A filler acknowledgement is audio, so a system counting it as the answer could hit any
+target by learning to say "achha" quickly. A configuration that met p95 with filler
+publishes its filler rate beside the number, and a turn covered by filler is a turn
+the answer was late in.
 
 The clock is backdated rather than started at the endpoint: `silence_ms` has already
 elapsed by the time the endpointer fires, so `TurnClock` subtracts it. An earlier

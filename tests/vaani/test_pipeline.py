@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+from vaani.confirm import ASK_AGAIN
 from vaani.endpoint import Endpointer
 from vaani.grounding import REFUSED
 from vaani.llm_turn import StreamedTurn
@@ -211,3 +212,62 @@ async def test_a_figure_the_user_said_may_be_repeated_back() -> None:
         pass
 
     assert tts.said == ["Aapki aay 300000 hai, theek hai."]
+
+
+async def test_an_unreadable_figure_is_confirmed_rather_than_answered() -> None:
+    """One confirmation turn is cheaper than one wrong eligibility answer, and the
+    second thing is somebody travelling to an office because the agent was confident."""
+    stt = ScriptedStt(final="meri aay pachpan hazaar hai")
+    flow, tts = pipeline(stt, text("Aap eligible hain."))
+
+    async for _chunk in flow.run(frames(SPEECH)):
+        pass
+
+    assert tts.said == [ASK_AGAIN]
+
+
+async def test_the_model_never_runs_on_an_unreadable_figure() -> None:
+    """Handing it over means either the model normalises the phrase, which is the job
+    vaani.numerals exists to take away, or the amount is absent from the prompt and the
+    reply rests on an assumption nobody made deliberately."""
+    stt = ScriptedStt(final="meri aay pachpan hazaar hai")
+    client = ScriptedClient(text("Aap eligible hain."))
+    flow = StreamingPipeline(
+        stt=stt,
+        turn=StreamedTurn(llm=client, provider="scripted"),
+        tts=RecordingTts(),
+    )
+
+    async for _chunk in flow.run(frames(SPEECH)):
+        pass
+
+    assert client.seen == []
+
+
+async def test_a_readable_figure_is_answered_without_a_confirmation_turn() -> None:
+    """The control. An arm that confirmed everything would pass the test above and
+    double the length of every conversation."""
+    stt = ScriptedStt(final="meri aay pachaas hazaar hai")
+    flow, tts = pipeline(stt, text("Aap eligible hain."))
+
+    async for _chunk in flow.run(frames(SPEECH)):
+        pass
+
+    assert tts.said == ["Aap eligible hain."]
+
+
+async def test_confirmation_is_an_arm_that_can_be_switched_off() -> None:
+    """It spends a turn of the latency this project exists to reduce, so the ablation
+    measures both sides of that trade rather than assuming the answer."""
+    stt = ScriptedStt(final="meri aay pachpan hazaar hai")
+    flow = StreamingPipeline(
+        stt=stt,
+        turn=StreamedTurn(llm=ScriptedClient(text("Aap eligible hain.")), provider="scripted"),
+        tts=(tts := RecordingTts()),
+        confirm=False,
+    )
+
+    async for _chunk in flow.run(frames(SPEECH)):
+        pass
+
+    assert tts.said == ["Aap eligible hain."]

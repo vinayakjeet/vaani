@@ -220,3 +220,55 @@ async def test_the_clock_measures_forward() -> None:
     await asyncio.sleep(0.01)
 
     assert clock.elapsed_ms() > first
+
+
+def test_the_answer_is_judged_on_when_it_is_heard_not_when_it_is_sent() -> None:
+    """The filler is yielded in full before the answer's first chunk, so the answer is
+    queued behind however long the filler takes to play. Audio leaves the process far
+    faster than real time, so the send time is a moment at which the listener is still
+    hearing "ek minute"."""
+    clock = TurnClock()
+    clock.mark_audio(is_answer=False)
+    clock.mark_audio(is_answer=True)
+
+    # Two seconds of filler still to play in front of it.
+    clock.mark_heard(queued_ahead_ms=2000)
+
+    assert clock.first_answer_audio_ms < 100
+    assert clock.first_answer_heard_ms >= 2000
+    assert clock.target_ms == clock.first_answer_heard_ms
+    assert not clock.met_p95_floor
+
+
+def test_only_the_first_answer_chunk_sets_the_heard_time() -> None:
+    """A later chunk is not when the reply started, and letting it overwrite would make
+    the number grow with the length of the answer."""
+    clock = TurnClock()
+    clock.mark_audio(is_answer=True)
+    clock.mark_heard(queued_ahead_ms=100)
+    first = clock.first_answer_heard_ms
+
+    clock.mark_heard(queued_ahead_ms=5000)
+
+    assert clock.first_answer_heard_ms == first
+
+
+def test_an_answer_with_nothing_queued_ahead_is_heard_when_it_is_sent() -> None:
+    """The turn that met the target honestly: no filler, nothing in front, so the two
+    numbers agree rather than one of them being absent."""
+    clock = TurnClock()
+    clock.mark_audio(is_answer=True)
+    clock.mark_heard(queued_ahead_ms=0)
+
+    assert clock.first_answer_heard_ms == pytest.approx(clock.first_answer_audio_ms, abs=5)
+    assert clock.met_p50_target
+
+
+def test_a_transport_that_cannot_estimate_playout_falls_back_to_the_send_time() -> None:
+    """Known to be optimistic, and reported as the send time rather than silently
+    compared as though it were the same number."""
+    clock = TurnClock()
+    clock.mark_audio(is_answer=True)
+
+    assert clock.first_answer_heard_ms is None
+    assert clock.target_ms == clock.first_answer_audio_ms

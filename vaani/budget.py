@@ -51,6 +51,18 @@ class TurnClock:
     started_ns: int = field(default_factory=time.monotonic_ns)
     first_audio_ms: float | None = None
     first_answer_audio_ms: float | None = None
+    # When the listener could actually hear the answer, which is not when it was sent.
+    #
+    # The filler is yielded in full before the answer's first chunk, so the answer is
+    # queued behind however long the filler takes to play, between 1.8 and 3.5 seconds
+    # for the committed bank. Audio leaves the process far faster than real time, so
+    # `first_answer_audio_ms` records a moment at which the listener is still hearing
+    # "ek minute". Judging the target on it flatters every turn the filler fired on,
+    # which is most of them, because the deadline is shorter than the endpoint wait.
+    #
+    # This is the same error SPEC was written to prevent, one stage further down: a
+    # measurement taken where the code was convenient rather than where the listener is.
+    first_answer_heard_ms: float | None = None
     filler_spoken: bool = False
 
     def elapsed_ms(self) -> float:
@@ -69,20 +81,41 @@ class TurnClock:
         if is_answer and self.first_answer_audio_ms is None:
             self.first_answer_audio_ms = now
 
+    def mark_heard(self, queued_ahead_ms: float) -> None:
+        """When the answer reaches the ear, given what is still playing in front of it.
+
+        Called from the transport rather than from the producer, because only the
+        transport knows how much audio is queued ahead. Recorded once: the first answer
+        chunk is the one a listener perceives as the reply starting.
+        """
+        if self.first_answer_heard_ms is None:
+            self.first_answer_heard_ms = self.elapsed_ms() + max(0.0, queued_ahead_ms)
+
     @property
-    def met_p50_target(self) -> bool:
-        """Against the answer's audio, never the filler's."""
+    def target_ms(self) -> float | None:
+        """The number the targets are judged on: heard, falling back to sent.
+
+        The fallback is for a transport that cannot estimate playout, where the sent
+        time is the best available answer and is known to be optimistic. A configuration
+        measured that way says so rather than being compared as though it were the same
+        number.
+        """
         return (
-            self.first_answer_audio_ms is not None
-            and self.first_answer_audio_ms < FIRST_AUDIO_P50_MS
+            self.first_answer_heard_ms
+            if self.first_answer_heard_ms is not None
+            else self.first_answer_audio_ms
         )
 
     @property
+    def met_p50_target(self) -> bool:
+        """Against the answer as heard, never the filler and never the send time."""
+        target = self.target_ms
+        return target is not None and target < FIRST_AUDIO_P50_MS
+
+    @property
     def met_p95_floor(self) -> bool:
-        return (
-            self.first_answer_audio_ms is not None
-            and self.first_answer_audio_ms < FIRST_AUDIO_P95_MS
-        )
+        target = self.target_ms
+        return target is not None and target < FIRST_AUDIO_P95_MS
 
 
 def remaining_ms(clock: TurnClock, deadline_ms: int) -> float:

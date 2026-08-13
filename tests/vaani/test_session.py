@@ -562,3 +562,54 @@ async def test_filler_audio_is_kept_out_of_the_answers_speed_ratio() -> None:
     assert b"achha" in transport.sent_audio
     assert voice.quality.answer_audio_s > 0
     assert voice.quality.answer_audio_s == pytest.approx(len(b"a1" + b"a2") / 6000)
+
+
+async def test_the_answers_heard_time_includes_the_filler_queued_in_front_of_it() -> None:
+    """The measurement bug the filler bank exposed. `speak_within` yields the whole
+    filler before the answer's first chunk, and audio leaves the process far faster than
+    real time, so the send time is a moment at which the listener is still hearing "ek
+    minute". Judging the target on it flatters every turn the filler fired on, which is
+    most of them, because the deadline is shorter than the endpoint wait."""
+    voice, transport = session(*speech_then_silence(), chunks=[b"a1", b"a2"], delay=0.02)
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: len(transport.sent_audio) >= 3), 2.0)
+    await stop(task)
+
+    clock = voice.clock
+    assert clock.filler_spoken
+    # The filler here is five bytes, so at 6000 bytes a second it is under a millisecond
+    # of playout. The property under test is that the heard time is never earlier than
+    # the send time, and carries the queue in front of it.
+    assert clock.first_answer_heard_ms >= clock.first_answer_audio_ms
+    assert clock.target_ms == clock.first_answer_heard_ms
+
+
+async def test_a_real_filler_clip_pushes_the_answer_past_the_target() -> None:
+    """With the committed bank rather than a five byte stub. The shortest clip is 1.78
+    seconds of playout, so an answer queued behind one cannot meet a 500ms target however
+    fast the pipeline was, and the honest number says so."""
+    from vaani.fillers import FillerBank, Purpose, read_chunks
+
+    clip = FillerBank().pick(Purpose.THINKING)
+    assert clip is not None
+    chunks = read_chunks(clip, 720)
+
+    async def real_filler() -> AsyncIterator[bytes]:
+        for chunk in chunks:
+            yield chunk
+
+    transport = FakeTransport(control(ClientMessage.START), *speech_then_silence())
+    voice = VoiceSession(
+        transport=transport,
+        answer=answering([b"a1", b"a2"], delay=0.02),
+        filler=real_filler,
+        bytes_per_second=6000,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: b"a2" in transport.sent_audio), 2.0)
+    await stop(task)
+
+    assert voice.clock.first_answer_heard_ms > 1500
+    assert not voice.clock.met_p50_target

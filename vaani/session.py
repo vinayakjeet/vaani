@@ -529,6 +529,12 @@ class VoiceSession:
         # real speech. A number with no derivation in the code that reads it is a number
         # nobody can check.
         played = playout_seconds(chunk.data, self._bytes_per_second)
+
+        # Read before this chunk is added, because what delays the answer is the audio
+        # already queued in front of it, not its own length.
+        if self.clock is not None and self.clock.first_answer_audio_ms is not None:
+            self.clock.mark_heard(self._turns.playing_ms_remaining())
+
         self._turns.note_audio_queued(played)
 
         # Filler counts toward the playout estimate and not toward the answer's numbers,

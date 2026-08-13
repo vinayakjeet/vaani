@@ -15,25 +15,38 @@ import time
 
 import pytest
 
-from app.routers.voice import FILLER_AUDIO, FILLER_CHUNK_BYTES, speak_filler
+from app.routers.voice import FILLER_CHUNK_BYTES, speak_filler
 
 
 async def collect() -> list[bytes]:
     return [chunk async for chunk in speak_filler()]
 
 
-def test_the_asset_is_committed() -> None:
-    """A fork without it falls back to synthesising, which works and is slow. The
-    asset existing is what makes the fast path the normal one."""
-    assert FILLER_AUDIO.exists()
-    assert FILLER_AUDIO.stat().st_size > 1000
+def test_the_bank_is_committed() -> None:
+    """A fork without it falls back to synthesising, which works and is slow. The clips
+    existing is what makes the fast path the normal one.
+
+    A bank rather than a clip, because the deadline is shorter than the endpoint wait so
+    this fires on most turns, and the same four words before every answer is how an IVR
+    sounds. The legacy single clip still counts, so a checkout that has not run
+    `scripts/build_fillers.py` is not reported as broken."""
+    from vaani.fillers import FillerBank, Purpose
+
+    clips = FillerBank().available(Purpose.THINKING)
+
+    assert clips
+    assert all(clip.stat().st_size > 1000 for clip in clips)
 
 
 async def test_it_speaks_from_disk_with_no_provider() -> None:
+    """One of the committed clips, byte for byte, rather than anything synthesised."""
+    from vaani.fillers import FillerBank, Purpose
+
+    committed = {clip.read_bytes() for clip in FillerBank().available(Purpose.THINKING)}
     chunks = await collect()
 
     assert chunks
-    assert b"".join(chunks) == FILLER_AUDIO.read_bytes()
+    assert b"".join(chunks) in committed
 
 
 async def test_it_is_chunked_rather_than_sent_whole() -> None:
@@ -56,18 +69,12 @@ async def test_the_first_chunk_is_effectively_free() -> None:
     assert (time.monotonic() - started) * 1000 < 50
 
 
-async def test_a_missing_asset_still_speaks(monkeypatch) -> None:
+async def test_a_missing_asset_still_speaks(monkeypatch, tmp_path) -> None:
     """A fork that has not generated one must not go silent. Silence is the outcome
     every degradation rule in SPEC exists to prevent, and it is worse than a slow
     acknowledgement."""
     import app.routers.voice as router
-
-    class Missing:
-        def read_bytes(self) -> bytes:
-            raise OSError("no such file")
-
-        def __str__(self) -> str:
-            return "missing.mp3"
+    from vaani.fillers import FillerBank
 
     synthesised: list[str] = []
 
@@ -76,7 +83,9 @@ async def test_a_missing_asset_still_speaks(monkeypatch) -> None:
             synthesised.append(text)
             yield b"synthesised-filler"
 
-    monkeypatch.setattr(router, "FILLER_AUDIO", Missing())
+    # An empty directory rather than a stubbed reader, so this exercises the same
+    # emptiness check a checkout that never ran the build script would hit.
+    monkeypatch.setattr(router, "_fillers", FillerBank(assets=tmp_path))
     monkeypatch.setattr(router, "EdgeTts", lambda: Stub())
 
     assert await collect() == [b"synthesised-filler"]
