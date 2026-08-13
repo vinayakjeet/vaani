@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -49,6 +50,22 @@ _in_session = asyncio.Lock()
 # answer misses the deadline, and it is never counted as the answer's own audio:
 # `TurnClock` keeps that number separately so a filler cannot flatter the target.
 FILLER_TEXT = "Ek minute, dekh raha hoon."
+
+# Synthesised once and committed, rather than spoken on demand.
+#
+# Measured in a browser against the live backend, an on-demand filler arrived 1796ms
+# after speech ended. It exists to protect an 800ms floor and it could not, because
+# saying it meant a network round trip to a synthesiser on the one path that is
+# already late. The phrase never changes, so it is the one piece of audio in this
+# system that can be a file.
+#
+# This is M1.8's argument in miniature: the tail belongs to the network, and the fix
+# is not to make the request faster but to stop making it.
+FILLER_AUDIO = Path(__file__).resolve().parent.parent.parent / "vaani" / "assets" / "filler-hi.mp3"
+
+# Roughly a frame of MP3 at this bitrate. Chunked rather than sent whole so playback
+# starts on the first slice, the same shape the synthesiser's own output has.
+FILLER_CHUNK_BYTES = 720
 
 
 class SocketTransport:
@@ -114,8 +131,23 @@ def build_answer() -> Callable[[AsyncIterator[bytes], Callable[[], bool]], Async
 
 
 async def speak_filler() -> AsyncIterator[bytes]:
-    async for chunk in EdgeTts().synthesize(FILLER_TEXT, VOICE_HI):
-        yield chunk
+    """The acknowledgement, from disk, with no provider on the path.
+
+    Falls back to synthesising it if the asset is missing, so a fork that has not
+    generated one still speaks rather than going silent. That path is slow and says
+    so in the log, because a filler that is late is worse than useless: it spends the
+    deadline it was meant to cover.
+    """
+    try:
+        audio = FILLER_AUDIO.read_bytes()
+    except OSError:
+        logger.warning("filler.asset_missing", path=str(FILLER_AUDIO))
+        async for chunk in EdgeTts().synthesize(FILLER_TEXT, VOICE_HI):
+            yield chunk
+        return
+
+    for start in range(0, len(audio), FILLER_CHUNK_BYTES):
+        yield audio[start : start + FILLER_CHUNK_BYTES]
 
 
 @router.websocket("/ws/voice")
