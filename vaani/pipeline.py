@@ -22,7 +22,7 @@ with its own row in the ablation rather than part of this.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import structlog
 
@@ -73,10 +73,17 @@ class StreamingPipeline:
         self,
         frames: AsyncIterator[bytes],
         still_current: Callable[[], bool] | None = None,
+        on_transcript: Callable[[str], Awaitable[None]] | None = None,
+        on_sentence: Callable[[str], Awaitable[None]] | None = None,
     ) -> AsyncIterator[bytes]:
         transcript = await self._listen(frames)
+        if on_transcript is not None:
+            await on_transcript(transcript)
+
         replies = self._turn.run(transcript, still_current)
-        async for chunk in speak_as_they_arrive(replies, self._tts, self._voice):
+        async for chunk in speak_as_they_arrive(
+            replies, self._tts, self._voice, on_sentence=on_sentence
+        ):
             yield chunk
 
     async def _listen(self, frames: AsyncIterator[bytes]) -> str:

@@ -10,7 +10,7 @@ exercised until the day it was needed.
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Protocol
 
 import structlog
@@ -37,7 +37,10 @@ class TtsError(Exception):
 
 
 async def speak_as_they_arrive(
-    tokens: AsyncIterator[str], tts: TtsProvider, voice: str = VOICE_HI
+    tokens: AsyncIterator[str],
+    tts: TtsProvider,
+    voice: str = VOICE_HI,
+    on_sentence: Callable[[str], Awaitable[None]] | None = None,
 ) -> AsyncIterator[bytes]:
     """Audio for each sentence as soon as the token stream completes that sentence.
 
@@ -55,6 +58,10 @@ async def speak_as_they_arrive(
     sentences = 0
     async for sentence in from_stream(tokens):
         sentences += 1
+        if on_sentence is not None:
+            # Reported before synthesis, so the transcript pane shows the words at
+            # the moment they exist rather than after the audio for them arrives.
+            await on_sentence(sentence)
         async for chunk in tts.synthesize(sentence, voice, index=sentences):
             yield chunk
 
