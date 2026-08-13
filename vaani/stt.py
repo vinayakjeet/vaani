@@ -11,8 +11,10 @@ reports which one it is.
 from __future__ import annotations
 
 import os
+from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 import httpx
@@ -245,3 +247,106 @@ class GroqWhisper:
             provider=self.name,
             streaming=self.streaming,
         )
+
+
+# Why a turn had to fall back, as a closed set. A metric label built from an
+# exception message has unbounded cardinality, and a failing provider generates a
+# new string every time.
+class Reason(StrEnum):
+    STREAM_FAILED = "stream_failed"
+    NO_FINAL = "no_final"
+
+
+# Counted in process. M4.5 wires this to a real metric; until then a counter an
+# operator can see beats one that does not exist, and a stack whose recoveries all
+# fire is indistinguishable from a healthy one without it.
+recoveries: Counter[str] = Counter()
+
+
+class RecoveringStt:
+    """A streaming recogniser with the batch path behind it.
+
+    SPEC S5. The stream dies partway through an utterance and the user is left
+    holding a question nobody heard. The audio is still in memory, so it is sent
+    again through the endpoint that takes a whole file, which is slower and works.
+
+    The fallback is deliberately the *other* mechanism rather than a retry of the
+    same one. A streaming socket that just dropped is likely to drop again, and
+    retrying it spends the user's patience on the thing that already failed. This is
+    the same reasoning that makes the LLM hedge go to a different provider.
+
+    Slower is the point of the tradeoff and it is stated: recovery costs a full
+    transcription of the whole utterance, so a recovered turn misses the latency
+    budget. The session's filler deadline covers the gap, so the user hears an
+    acknowledgement rather than silence, which is what S5 asks for.
+    """
+
+    streaming = False
+
+    def __init__(self, stream: StreamingStt, batch: SttProvider) -> None:
+        self._stream = stream
+        self._batch = batch
+        self.name = f"recovering:{stream.name}"
+
+    async def stream(self, frames: AsyncIterator[bytes]) -> AsyncIterator[Partial]:
+        buffer = bytearray()
+        index = 0
+        final_seen = False
+
+        try:
+            async for partial in self._stream.stream(_keeping(frames, buffer)):
+                index = partial.index
+                if partial.final:
+                    final_seen = True
+                yield partial
+        except SttError as exc:
+            async for partial in self._recover(frames, buffer, index, Reason.STREAM_FAILED, exc):
+                yield partial
+            return
+
+        if not final_seen:
+            # The stream ended without ever saying it was finished. Treating that as
+            # a complete transcript would answer half a question, so it is a
+            # recovery rather than a success with a shrug.
+            async for partial in self._recover(frames, buffer, index, Reason.NO_FINAL, None):
+                yield partial
+
+    async def _recover(
+        self,
+        frames: AsyncIterator[bytes],
+        buffer: bytearray,
+        index: int,
+        reason: Reason,
+        cause: Exception | None,
+    ) -> AsyncIterator[Partial]:
+        # Keep buffering. The user is still talking, and the frames that arrive after
+        # the drop are the ones nothing has transcribed at all: the recogniser stopped
+        # reading them the moment it died. Abandoning them would send the batch path
+        # the first half of a sentence and answer that.
+        async for frame in frames:
+            buffer += frame
+
+        recoveries[reason] += 1
+        # The reason and the byte count, never the audio and never the text.
+        logger.warning(
+            "stt.recovered",
+            provider=self.name,
+            reason=str(reason),
+            audio_ms=round(len(buffer) / 32),
+        )
+
+        if not buffer:
+            # Nothing was ever heard, so there is nothing to send again. Raising is
+            # the honest outcome: SPEC S6 wants a silent microphone diagnosed, not
+            # answered.
+            raise SttError("stream failed before any audio arrived") from cause
+
+        final = await self._batch.transcribe(bytes(buffer))
+        yield Partial(text=final.text, final=True, index=index + 1)
+
+
+async def _keeping(frames: AsyncIterator[bytes], buffer: bytearray) -> AsyncIterator[bytes]:
+    """Pass frames through while keeping a copy, so a retry has something to send."""
+    async for frame in frames:
+        buffer += frame
+        yield frame
