@@ -4,8 +4,12 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Callable
 
+import pytest
+
+from vaani import session as session_module
 from vaani.protocol import ClientMessage, Frame, ServerMessage
 from vaani.session import Incoming, VoiceSession
+from vaani.stt import SttError
 
 from .test_endpoint import SILENCE, SPEECH
 
@@ -93,13 +97,32 @@ async def filler() -> AsyncIterator[bytes]:
     yield b"achha"
 
 
-def session(*incoming: Incoming | str, chunks=None, delay: float = 0.0):
+def session(
+    *incoming: Incoming | str,
+    chunks=None,
+    delay: float = 0.0,
+    backchannel: bool | Exception | None = None,
+):
+    """A session over a fake transport.
+
+    `backchannel` is the verifier's verdict, so a test can say what the interrupting
+    utterance turned out to be without a recogniser. None means no verifier at all, which
+    is the unverified arm: a suspected interruption commits on duration alone.
+    """
     transport = FakeTransport(control(ClientMessage.START), *incoming)
+
+    async def verdict(_pcm: bytes) -> bool:
+        if isinstance(backchannel, Exception):
+            raise backchannel
+        return bool(backchannel)
+
     return (
         VoiceSession(
             transport=transport,
             answer=answering(chunks if chunks is not None else [b"a1", b"a2"], delay),
             filler=filler,
+            bytes_per_second=6000,
+            backchannel=None if backchannel is None else verdict,
         ),
         transport,
     )
@@ -210,15 +233,19 @@ async def test_an_interrupt_leaves_the_session_listening_and_clean() -> None:
     assert voice._speaking is None
 
 
-async def test_speech_during_playback_interrupts_without_a_control_message() -> None:
+async def test_sustained_speech_during_playback_interrupts_without_a_control_message() -> None:
     """A client that never sends INTERRUPT still gets interrupted. The one that does
-    gets there sooner, which is the only difference."""
+    gets there sooner, which is the only difference.
+
+    Long enough to clear the commit threshold, because that is the point of the
+    threshold: nobody backchannels for that long, so this needs no transcript to be
+    certain and does not pay a round trip to find out."""
     # Still generation 1: a client that simply talks over the agent has not started
     # a new turn of its own, so its frames carry the turn it is interrupting.
     voice, transport = session(
         *speech_then_silence(),
         AFTER_AUDIO,
-        *[frame(SPEECH, 1) for _ in range(30)],
+        *[frame(SPEECH, 1) for _ in range(60)],
         chunks=[b"a1", b"a2", b"a3", b"a4"],
         delay=0.02,
     )
@@ -228,6 +255,98 @@ async def test_speech_during_playback_interrupts_without_a_control_message() -> 
     await stop(task)
 
     assert len(transport.sent_audio) < 4
+
+
+async def test_a_short_backchannel_pauses_playback_and_then_resumes_it() -> None:
+    """"haan" over a reply must cost nothing. Killing playback on every acknowledgement
+    is what made the agent feel neurotic, and enumerating the acknowledgements is a
+    losing game in Hinglish, so the short ones are held and identified instead."""
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        # Twenty frames of speech is 400ms: past the pause threshold, under the commit
+        # one. Then silence, so the utterance ends and gets identified.
+        *[frame(SPEECH, 1) for _ in range(20)],
+        *[frame(SILENCE, 1) for _ in range(60)],
+        chunks=[b"a1", b"a2", b"a3", b"a4"],
+        delay=0.02,
+        backchannel=True,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: ServerMessage.RESUME in transport.kinds()), 2.0)
+    await asyncio.sleep(0.2)
+    await stop(task)
+
+    kinds = transport.kinds()
+    assert kinds.index(ServerMessage.PAUSE) < kinds.index(ServerMessage.RESUME)
+    # The turn survived. A backchannel that abandons the reply has cost the user the
+    # answer they were agreeing with.
+    assert not voice._state.interrupted_previous
+    # Every chunk of the answer, not merely most of them. The held audio is delivered
+    # after the resume rather than dropped, which is the difference between WAIT and BLOCK.
+    answer_chunks = [chunk for chunk in transport.sent_audio if chunk != b"achha"]
+    assert answer_chunks == [b"a1", b"a2", b"a3", b"a4"]
+
+
+async def test_a_short_utterance_that_was_not_a_backchannel_still_interrupts() -> None:
+    """The other half of the same decision. Short and content-bearing is a real
+    interruption, and the verifier is what tells the two apart."""
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        *[frame(SPEECH, 1) for _ in range(20)],
+        *[frame(SILENCE, 1) for _ in range(60)],
+        chunks=[b"a1", b"a2", b"a3", b"a4"],
+        delay=0.02,
+        backchannel=False,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: voice._state.interrupted_previous), 2.0)
+    await stop(task)
+
+    assert ServerMessage.RESUME not in transport.kinds()
+
+
+async def test_a_recogniser_that_cannot_say_commits_the_interruption() -> None:
+    """A failed check is not evidence of a backchannel. Committing costs a turn the user
+    repeats; resuming over somebody who really did interrupt is the failure the whole
+    mechanism exists to prevent."""
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        *[frame(SPEECH, 1) for _ in range(20)],
+        *[frame(SILENCE, 1) for _ in range(60)],
+        chunks=[b"a1", b"a2", b"a3", b"a4"],
+        delay=0.02,
+        backchannel=SttError("provider returned 503"),
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: voice._state.interrupted_previous), 2.0)
+    await stop(task)
+
+    assert ServerMessage.RESUME not in transport.kinds()
+
+
+async def test_the_interrupting_audio_starts_the_turn_it_caused() -> None:
+    """Without this the new turn begins from whatever arrives after the decision, so the
+    agent hears an interruption from its second word onward and answers a fragment."""
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        *[frame(SPEECH, 1) for _ in range(60)],
+        chunks=[b"a1", b"a2", b"a3", b"a4"],
+        delay=0.02,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: voice._state.interrupted_previous), 2.0)
+    frames_carried = voice._frames.qsize() if voice._frames is not None else 0
+    await stop(task)
+
+    assert frames_carried > 0
 
 
 async def test_audio_from_an_abandoned_turn_is_never_sent() -> None:
@@ -358,3 +477,88 @@ async def test_the_transport_is_actually_driven() -> None:
 async def _until(predicate, interval: float = 0.005) -> None:
     while not predicate():
         await asyncio.sleep(interval)
+
+
+async def test_a_released_hold_does_not_delay_every_later_chunk(monkeypatch) -> None:
+    """The property the old bound missed. Forcing one chunk through unblocks that chunk and
+    leaves the flag set, so the next one waits the full timeout again and a forty-chunk
+    reply arrives one slice every three seconds, with every log line blaming the hold
+    rather than the flag nothing cleared."""
+    monkeypatch.setattr(session_module, "STUCK_HOLD_S", 0.05)
+
+    voice, transport = session(
+        *speech_then_silence(), chunks=[b"a1", b"a2", b"a3"], delay=0.0
+    )
+    # A flag set by a path nothing clears, which is exactly how this arose: speech was
+    # noted during playback and the endpoint that would have cleared it never fired.
+    voice._turns.note_user_speaking()
+
+    task = asyncio.create_task(voice.run())
+    await asyncio.wait_for(_until(lambda: len(transport.sent_audio) >= 3), 2.0)
+    await stop(task)
+
+    # One release, not one per chunk: the flag is repaired rather than stepped over.
+    assert not voice._turns.user_speaking
+
+
+async def test_a_real_barge_in_shows_up_in_the_interactivity_numbers() -> None:
+    """Wired to the events, not only unit-tested beside them. A metrics object nothing
+    calls reports a healthy conversation forever, which is the shape of check this
+    project keeps paying for."""
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        *[frame(SPEECH, 1) for _ in range(60)],
+        chunks=[b"a1", b"a2", b"a3", b"a4"],
+        delay=0.02,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: voice._state.interrupted_previous), 2.0)
+    await stop(task)
+
+    assert voice.quality.user_interrupted_agent == 1
+    # The reply was cut off and never finished, so it is not a recovery.
+    assert voice.quality.recovery_rate == 0.0
+    assert voice.quality.longest_agent_monologue_ms > 0
+
+
+async def test_an_ignored_backchannel_is_counted_and_the_reply_still_counts_as_delivered() -> None:
+    """A backchannel must not spend the recovery denominator. The user did not interrupt,
+    so a session full of "haan" would otherwise read as a session full of barge-ins the
+    agent never recovered from."""
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        *[frame(SPEECH, 1) for _ in range(20)],
+        *[frame(SILENCE, 1) for _ in range(60)],
+        chunks=[b"a1", b"a2"],
+        delay=0.02,
+        backchannel=True,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: ServerMessage.RESUME in transport.kinds()), 2.0)
+    await asyncio.sleep(0.2)
+    await stop(task)
+
+    assert voice.quality.backchannels_ignored == 1
+    assert voice.quality.user_interrupted_agent == 0
+    assert voice.quality.recovery_rate is None
+
+
+async def test_filler_audio_is_kept_out_of_the_answers_speed_ratio() -> None:
+    """The filler is a file read off disk, so counting it as synthesised audio would
+    flatter the one number that says whether synthesis kept up with playback."""
+    # Slow enough that the answer misses the deadline, so the filler definitely speaks.
+    # With an instant answer it does not, and the test would pass without exercising the
+    # exclusion at all.
+    voice, transport = session(*speech_then_silence(), chunks=[b"a1", b"a2"], delay=0.02)
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: len(transport.sent_audio) >= 3), 2.0)
+    await stop(task)
+
+    assert b"achha" in transport.sent_audio
+    assert voice.quality.answer_audio_s > 0
+    assert voice.quality.answer_audio_s == pytest.approx(len(b"a1" + b"a2") / 6000)

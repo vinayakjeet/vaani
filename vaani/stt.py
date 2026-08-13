@@ -23,6 +23,7 @@ import structlog
 from vaani.audio import to_wav
 from vaani.protocol import FRAME_MS
 from vaani.spans import STT_REQUEST, STT_STREAM, stage_span
+from vaani.vocabulary import bias_prompt, is_echo
 
 logger = structlog.get_logger(__name__)
 
@@ -199,6 +200,7 @@ class GroqWhisper:
         api_key: str | None = None,
         model: str = GROQ_MODEL,
         client: httpx.AsyncClient | None = None,
+        bias: bool = True,
     ) -> None:
         self._api_key = api_key or os.environ.get("GROQ_API_KEY")
         self._model = model
@@ -206,6 +208,11 @@ class GroqWhisper:
         # absence is why the one call site no test could reach was the broken one.
         # `OpenAICompatibleProvider` has had this from the start; this did not.
         self._client = client
+        # Off is the measured baseline arm. Biasing costs no latency, so it looks
+        # like a free win and has to be shown to be one: the ablation compares
+        # scheme-name accuracy with it and without it, and an echoed prompt is a
+        # cost it can pay.
+        self._prompt = bias_prompt() if bias else ""
 
     async def transcribe(self, pcm: bytes) -> Transcript:
         if not self._api_key:
@@ -219,12 +226,15 @@ class GroqWhisper:
             },
         ) as stage:
             client = self._client or httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
+            data = {"model": self._model, "response_format": "verbose_json"}
+            if self._prompt:
+                data["prompt"] = self._prompt
             try:
                 response = await client.post(
                     GROQ_TRANSCRIBE_URL,
                     headers={"Authorization": f"Bearer {self._api_key}"},
                     files={"file": ("utterance.wav", to_wav(pcm), "audio/wav")},
-                    data={"model": self._model, "response_format": "verbose_json"},
+                    data=data,
                 )
             except httpx.HTTPError as exc:
                 raise SttError(f"{type(exc).__name__}") from exc
@@ -240,6 +250,16 @@ class GroqWhisper:
 
             payload = response.json()
             text = (payload.get("text") or "").strip()
+
+            if self._prompt and is_echo(text, self._prompt):
+                # The bias prompt transcribed back. Whisper prepends it to the
+                # decoder's context, so near-silence sometimes decodes as the prompt
+                # itself, and a turn where nobody spoke would be answered as a
+                # question about every scheme at once. Treated as no speech, which is
+                # what it was.
+                logger.warning("stt.prompt_echoed", provider=self.name, chars=len(text))
+                text = ""
+
             stage.record(
                 **{
                     "vaani.stt.final_chars": len(text),

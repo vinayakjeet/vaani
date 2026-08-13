@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import array
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -75,6 +76,11 @@ DEFAULT_EARLY_SILENCE_MS = 200
 # threshold here, and it trades a false complaint against a silent wait.
 DEFAULT_SILENCE_TIMEOUT_MS = 5000
 
+# How much of the turn's audio an audio-based completion arm may be handed. Eight seconds
+# of 16kHz PCM16, which is exactly what smart-turn reads, so keeping more is memory spent
+# on samples the model discards.
+COMPLETION_AUDIO_BYTES = 8 * 16_000 * 2
+
 # Below this an input is not quiet, it is off. Full scale for PCM16 is 32767, so a
 # reading under one sample of amplitude is digital zero plus dither rather than a
 # room. The distinction matters because the two have different answers: a muted
@@ -115,6 +121,19 @@ class Endpointer:
 
     silence_timeout_ms: int = DEFAULT_SILENCE_TIMEOUT_MS
 
+    # What counts as speech. None is frame energy against `threshold_rms`, which is the
+    # baseline arm and the guess this project has admitted to; a callable is a real
+    # detector, and `vaani.vad_silero.SileroVad` is one. Injected rather than selected by
+    # a flag so the ablation constructs both arms and neither can be reached by accident.
+    speech: Callable[[bytes], bool] | None = None
+
+    # What decides the utterance already sounds finished. None is the word-order rule on
+    # the partial transcript, fed through `note_partial`; a callable is handed the turn's
+    # audio, which is what `vaani.smart_turn.SmartTurn` reads. The two arms answer the
+    # same question from different evidence, so they share `_partial_complete` and the
+    # waterfall records which one was asked.
+    completion: Callable[[bytes], bool] | None = None
+
     speech_ms: int = field(default=0, init=False)
     silence_ms: int = field(default=0, init=False)
     # Everything heard before this turn started, so a microphone that is producing
@@ -124,6 +143,11 @@ class Endpointer:
     _started: bool = field(default=False, init=False)
     _resume_ms: int = field(default=0, init=False)
     _partial_complete: bool = field(default=False, init=False)
+    # The turn's audio, kept only when an audio-based completion arm is in use. Capped at
+    # what that arm reads, because an uncapped buffer on a 512MB instance is a way to lose
+    # the whole service to somebody who leaves a microphone open.
+    _heard: bytearray = field(default_factory=bytearray, init=False)
+    _asked: bool = field(default=False, init=False)
 
     @classmethod
     def at(cls, aggressiveness: int = DEFAULT_AGGRESSIVENESS, **overrides: object) -> Endpointer:
@@ -199,7 +223,18 @@ class Endpointer:
         self.waiting_ms += FRAME_MS
         self.peak_rms = max(self.peak_rms, level)
 
-        if level >= self.threshold_rms:
+        # The level is still measured when a detector is in use, because `diagnose`
+        # answers a different question with it: whether the microphone is producing
+        # anything at all. A model that says "not speech" cannot tell a muted input from
+        # a quiet room, and those two need different things said to the user.
+        speaking = level >= self.threshold_rms if self.speech is None else self.speech(pcm)
+
+        if self.completion is not None:
+            self._heard += pcm
+            if len(self._heard) > COMPLETION_AUDIO_BYTES:
+                del self._heard[:-COMPLETION_AUDIO_BYTES]
+
+        if speaking:
             self.speech_ms += FRAME_MS
             self._resume_ms += FRAME_MS
             if self.speech_ms >= self.min_speech_ms:
@@ -209,6 +244,14 @@ class Endpointer:
             # noisy room never ends.
             if self._resume_ms >= self.min_resume_ms:
                 self.silence_ms = 0
+                if self.completion is not None:
+                    # The audio arm's verdict must not latch, for the same reason the
+                    # rule's does not: "mujhe ghar chahiye" is finished and "mujhe ghar
+                    # chahiye lekin" is not, and a verdict taken during the pause before
+                    # "lekin" would cut the caller off exactly as they qualified it. The
+                    # rule re-evaluates on every partial; this re-asks on the next pause.
+                    self._asked = False
+                    self._partial_complete = False
             return False
 
         self._resume_ms = 0
@@ -216,6 +259,20 @@ class Endpointer:
             return False
 
         self.silence_ms += FRAME_MS
+
+        # Asked once, at the only moment the answer changes anything: trailing silence has
+        # reached the short timeout, so the choice is to cut now or wait out the full one.
+        # At up to 100ms an inference, asking a model fifty times a second is not an
+        # option, and asking it earlier answers a question about an utterance that is
+        # still arriving.
+        if (
+            self.completion is not None
+            and not self._asked
+            and self.silence_ms >= self.early_silence_ms
+        ):
+            self._asked = True
+            self._partial_complete = self.completion(bytes(self._heard))
+
         return self.silence_ms >= self.silence_needed_ms
 
     def reset(self) -> None:
@@ -226,3 +283,11 @@ class Endpointer:
         self._partial_complete = False
         self.waiting_ms = 0
         self.peak_rms = 0.0
+        self._heard.clear()
+        self._asked = False
+        # A detector with recurrent state has to be told the turn ended too. Forgetting
+        # this leaves the previous utterance's hidden state deciding the first frames of
+        # the next one, and it is invisible: the numbers stay plausible.
+        reset = getattr(self.speech, "reset", None)
+        if reset is not None:
+            reset()

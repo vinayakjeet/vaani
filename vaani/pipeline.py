@@ -27,7 +27,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 import structlog
 
 from vaani.endpoint import Endpointer
+from vaani.grounding import check, figures
 from vaani.llm_turn import StreamedTurn
+from vaani.numerals import normalise
 from vaani.stt import StreamingStt, SttError
 from vaani.tts import VOICE_HI, TtsProvider, speak_as_they_arrive
 
@@ -76,13 +78,31 @@ class StreamingPipeline:
         on_transcript: Callable[[str], Awaitable[None]] | None = None,
         on_sentence: Callable[[str], Awaitable[None]] | None = None,
     ) -> AsyncIterator[bytes]:
-        transcript = await self._listen(frames)
-        if on_transcript is not None:
-            await on_transcript(transcript)
+        heard = await self._listen(frames)
 
-        replies = self._turn.run(transcript, still_current)
+        # Numbers become digits here, in code, before the model reads them. The
+        # applicant's own figure is the input to an eligibility comparison, and a model
+        # asked to both normalise and reason about it will occasionally do one of those
+        # jobs to the other's cost.
+        spoken = normalise(heard)
+        if spoken.unresolved:
+            logger.info("pipeline.numbers_unresolved", count=len(spoken.unresolved))
+
+        if on_transcript is not None:
+            await on_transcript(spoken.text)
+
+        # What the reply may state: what the user said, plus whatever the tools return
+        # as the turn runs. The set is read per sentence rather than captured now,
+        # because the tool round happens after this line and before the first sentence
+        # that could quote it.
+        said_by_user = figures(spoken.text)
+
+        def grounded(sentence: str) -> str:
+            return check(sentence, said_by_user | self._turn.sourced)
+
+        replies = self._turn.run(spoken.text, still_current)
         async for chunk in speak_as_they_arrive(
-            replies, self._tts, self._voice, on_sentence=on_sentence
+            replies, self._tts, self._voice, on_sentence=on_sentence, validate=grounded
         ):
             yield chunk
 

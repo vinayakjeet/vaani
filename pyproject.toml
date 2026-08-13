@@ -25,11 +25,25 @@ dependencies = [
 [tool.uv.sources]
 spanlight = { git = "https://github.com/vinayakjeet/spanlight" }
 
+# The two optional ablation arms: Silero for "is this speech", smart-turn for "has this
+# turn ended". Optional because the energy detector and the word-order rule are the
+# baseline arms the ablation measures against, so the free stack has to run without these.
+# The model files themselves are fetched by scripts/fetch_models.py, not declared here.
+[project.optional-dependencies]
+models = [
+    "onnxruntime>=1.20",
+    "numpy>=2.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.7",
+    # numpy in dev, not only in the extra, so the mel filterbank check against OpenAI's
+    # published reference runs in CI. It needs no model file, and it is the one part of
+    # the smart-turn arm that can be wrong while every other test stays green.
+    "numpy>=2.0",
 ]
 
 [tool.uv]

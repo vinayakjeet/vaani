@@ -31,11 +31,12 @@ from llm.types import ProviderError
 from vaani.barge_in import AudioChunk, SpeakingTurn
 from vaani.budget import TurnClock, speak_within
 from vaani.endpoint import Endpointer, MicState
-from vaani.protocol import ClientMessage, Frame, ServerMessage
+from vaani.protocol import FRAME_BYTES, ClientMessage, Frame, ServerMessage
+from vaani.quality import Interactivity, Interruption
 from vaani.state import State, TurnState
 from vaani.stt import SttError
-from vaani.tts import AUDIO_MIME, TtsError
-from vaani.turn_taking import AudioStatus, TurnTaking
+from vaani.tts import AUDIO_MIME, TtsError, playout_seconds
+from vaani.turn_taking import AudioStatus, Barge, PendingBarge, TurnTaking
 
 logger = structlog.get_logger(__name__)
 
@@ -43,9 +44,15 @@ logger = structlog.get_logger(__name__)
 # than echoing a provider. Anything else is logged by class only.
 SAFE_TO_LOG = (ProviderError, SttError, TtsError)
 
-# The longest a chunk may be held while the user speaks. Beyond this the hold is assumed to be
-# a stuck flag rather than a talkative user, and the audio goes out late instead of never.
-MAX_HOLD_S = 3.0
+# How long a hold may go on with no further evidence that the user is still talking before
+# the flag is treated as stuck and cleared.
+#
+# The first version bounded the hold and then sent the audio anyway, which unblocks the turn
+# and leaves the wrong state in place, so the next chunk waits the full three seconds again.
+# Bolna's version is better and it is the one here: the release is keyed on staleness rather
+# than on a timer, and it repairs the flag instead of bypassing the gate. Their constant is
+# also 3.0 seconds, arrived at independently.
+STUCK_HOLD_S = 3.0
 
 
 @dataclass(frozen=True)
@@ -90,12 +97,23 @@ class VoiceSession:
         answer: Answer,
         filler: Callable[[], AsyncIterator[bytes]],
         endpointer: Endpointer | None = None,
+        bytes_per_second: int = 0,
+        backchannel: Callable[[bytes], Awaitable[bool]] | None = None,
     ) -> None:
         self._transport = transport
         self._answer = answer
         self._filler = filler
         self._endpointer = endpointer or Endpointer(semantic=True)
         self._state = TurnState()
+        # How a chunk's byte count becomes a duration. Zero means the caller could not
+        # say, and then the playout estimate stays at zero rather than being invented:
+        # a confidently wrong duration is worse than an absent one, because the gate's
+        # grace period trusts it.
+        self._bytes_per_second = bytes_per_second
+        # Whether a short interruption was a backchannel. None means no verifier, so a
+        # suspected interruption is committed on duration alone, which is the previous
+        # behaviour and the ablation's baseline arm for this technique.
+        self._backchannel = backchannel
 
         self._speaking: SpeakingTurn | None = None
         self._playback: asyncio.Task[None] | None = None
@@ -111,10 +129,15 @@ class VoiceSession:
         # Which microphone complaint has already been made this turn, so it is said
         # once rather than fifty times a second.
         self._microphone_reported: MicState | None = None
-        # The turn-taking decisions read from Bolna: the three-state gate and the playout
-        # estimate. Interruption by word count still needs a partial transcript here, which
-        # the pipeline owns, so that half is not wired yet.
+        # The turn-taking decisions read from Bolna: the three-state gate, the playout
+        # estimate, and the backchannel rule.
         self._turns = TurnTaking()
+        # The interruption currently under suspicion, if any. Held rather than acted on
+        # until it is either long enough to be certain or identified by the recogniser.
+        self._barge: PendingBarge | None = None
+        # What the latency numbers cannot see. Per session rather than per turn, because
+        # every ratio in it is about a conversation rather than an utterance.
+        self.quality = Interactivity()
         self.clock: TurnClock | None = None
 
     async def run(self) -> None:
@@ -154,30 +177,8 @@ class VoiceSession:
             # trusted to have been stopped in time.
             return
 
-        self._turns.note_user_speaking() if self._endpointer.started else None
-
         if self._state.state is State.SPEAKING:
-            # Held audio needs to know the user has started, which is what turns the gate to
-            # WAIT rather than letting the agent speak over them.
-            if self._endpointer.started:
-                self._turns.note_user_speaking()
-
-            # Speech while the agent is talking is a barge-in without the client
-            # having to say so. A client that sends INTERRUPT gets there sooner; one
-            # that does not still gets interrupted.
-            #
-            # `started` and not `accept`, and only after the endpointer was reset for
-            # this purpose. `accept` answers "has the turn ended", which is the wrong
-            # question here, and reading a stale `started` left over from the
-            # utterance that just finished made the first silence frame of playback
-            # interrupt the answer it had only just started.
-            #
-            # `started` also requires `min_speech_ms` of sustained speech, so a cough
-            # or a door does not cut the agent off mid-sentence, which is the same
-            # rule that keeps a cough from starting a turn.
-            self._endpointer.accept(frame.pcm)
-            if self._endpointer.started:
-                await self._interrupt()
+            await self._on_frame_while_speaking(frame)
             return
 
         if self._state.state is not State.LISTENING:
@@ -192,6 +193,117 @@ class VoiceSession:
             return
 
         await self._check_microphone()
+
+    async def _on_frame_while_speaking(self, frame: Frame) -> None:
+        """Speech over the agent: pause first, decide second.
+
+        Interrupting on any sustained speech is what made the agent feel neurotic, because
+        a Hinglish speaker says "haan" and "achha" over a reply constantly and every one of
+        them killed playback. Enumerating those was the wrong fix: they are an open set.
+
+        So there are two thresholds on one signal. Long speech commits immediately, since
+        nobody backchannels for `commit_ms`, and making a real interruption wait for a
+        transcription round trip is the barge-in latency this project is bounding. Short
+        speech only pauses: the audio is held rather than discarded, the utterance is
+        identified, and then the turn is either cancelled or resumed. That is X-Talk's
+        pause-verify-resume loop, and it is possible here only because the gate already had
+        a WAIT state to hold audio in.
+
+        `started` rather than `accept`'s return value, and only after the endpointer was
+        reset for this purpose. `accept` answers "has the turn ended", which is the wrong
+        question, and a stale `started` from the utterance that just finished made the first
+        silence frame of playback interrupt the answer it had only just started.
+        """
+        ended = self._endpointer.accept(frame.pcm)
+
+        if not self._endpointer.started:
+            return
+
+        # Held audio needs to know the user has started, which is what turns the gate to
+        # WAIT rather than letting the agent talk over them.
+        self._turns.note_user_speaking()
+        self.quality.user_started_speaking()
+
+        if self._barge is None:
+            self._barge = PendingBarge()
+
+        match self._barge.note(frame.pcm, self._endpointer.speech_ms):
+            case Barge.COMMIT:
+                # Still mid-utterance, so the new turn keeps listening from here with the
+                # opening syllables restored.
+                await self._commit_barge("duration", complete=False)
+                return
+            case Barge.PAUSE if not self._barge.paused:
+                self._barge.paused = True
+                logger.info("session.barge_pending")
+                await self._say({"type": ServerMessage.PAUSE})
+            case _:
+                pass
+
+        if ended and self._barge is not None:
+            # The interrupting utterance finished under the commit threshold, so it is
+            # short enough to be a backchannel and has to be identified before a turn is
+            # thrown away for it.
+            await self._resolve_barge()
+
+    async def _resolve_barge(self) -> None:
+        assert self._barge is not None
+        audio = bytes(self._barge.audio)
+
+        if self._backchannel is None:
+            await self._commit_barge("unverified", complete=True)
+            return
+
+        try:
+            is_backchannel = await self._backchannel(audio)
+        except SttError as exc:
+            # A recogniser that could not say is not evidence of a backchannel. Committing
+            # is the safe direction: the cost is a turn the user has to repeat, where
+            # resuming over somebody who really did interrupt is the failure this exists to
+            # fix.
+            logger.warning("session.barge_unverified", detail=str(exc))
+            await self._commit_barge("verify_failed", complete=True)
+            return
+
+        if not is_backchannel:
+            await self._commit_barge("transcript", complete=True)
+            return
+
+        logger.info("session.backchannel_ignored", speech_ms=self._barge.speech_ms)
+        # Counted, because the other reading of a low interruption count is that the
+        # detector never fires, and the two are identical from the latency numbers.
+        self.quality.backchannel_ignored()
+        self._barge = None
+        # The user stopped, so the gate leaves WAIT and the held audio goes out. The turn
+        # is not counted, because a backchannel is not a turn and counting it would start
+        # the grace period that delays the rest of this very reply.
+        self._turns.note_user_stopped(count_turn=False)
+        self.quality.user_stopped_speaking()
+        self._endpointer.reset()
+        await self._say({"type": ServerMessage.RESUME})
+
+    async def _commit_barge(self, reason: str, *, complete: bool) -> None:
+        """Turn a suspicion into an interruption, and start the turn it belongs to.
+
+        `complete` is the difference between the two paths and it decides whether the new
+        turn is still listening. On the duration path the user is mid-sentence, so the turn
+        continues from where they are. On the verified path their utterance already ended,
+        and the endpoint that will never fire again is read off the endpointer before it is
+        reset: without that the clock would not be backdated and the turn would wait for a
+        second utterance that is not coming.
+        """
+        speech_ms = self._barge.speech_ms if self._barge is not None else 0
+        heard = bytes(self._barge.audio) if self._barge is not None else b""
+        silence_ms = self._endpointer.silence_ms
+        self._barge = None
+        logger.info("session.interrupted", reason=reason, speech_ms=speech_ms)
+        self.quality.interrupted(Interruption.USER_INTERRUPTED_AGENT)
+
+        await self._interrupt(heard=heard)
+
+        if complete and self._frames is not None:
+            self._frames.put_nowait(None)
+            await self._begin_answering(silence_ms=silence_ms)
 
     async def _check_microphone(self) -> None:
         """Say so when no speech is arriving, rather than waiting for an endpoint.
@@ -220,9 +332,10 @@ class VoiceSession:
         self._microphone_reported = None
         self._frames = asyncio.Queue()
 
-    async def _begin_answering(self) -> None:
+    async def _begin_answering(self, silence_ms: int | None = None) -> None:
         self._state.to(State.THINKING)
         generation = self._state.generation
+        self.quality.turn_started()
         # Read before the reset, and that order is the whole measurement.
         #
         # The clock is backdated to the last frame of speech, which is `silence_ms`
@@ -237,8 +350,13 @@ class VoiceSession:
         # zeroed it, so the backdating was always nothing and the flattering clock
         # shipped behind a comment saying it had not. Where you start the measurement
         # is the measurement, and so is when you read it.
+        # `silence_ms` is passed when the endpointer has already been reset for a new turn,
+        # which happens on a verified interruption: the utterance that ended is the one being
+        # answered, and its trailing silence is no longer readable here.
+        waited = self._endpointer.silence_ms if silence_ms is None else silence_ms
         self._turns.note_user_stopped()
-        spent_waiting = self._endpointer.silence_ms * 1_000_000
+        self.quality.user_stopped_speaking()
+        spent_waiting = waited * 1_000_000
         self.clock = TurnClock(started_ns=time.monotonic_ns() - spent_waiting)
 
         # Reset after, because the endpointer changes job here: it stops answering
@@ -274,6 +392,10 @@ class VoiceSession:
         """
         if not self._state.owns(generation):
             return
+        if kind == ServerMessage.REPLY:
+            # Counted here rather than at synthesis, because this is the text the listener
+            # is about to hear and it is already past the grounding check.
+            self.quality.sentence_spoken()
         await self._say({"type": kind, "text": text})
 
     async def _play(self, speaking: SpeakingTurn) -> None:
@@ -302,11 +424,18 @@ class VoiceSession:
             )
         finally:
             if self._state.state is State.SPEAKING:
+                # Reached only when playback ran to the end, since an interruption has
+                # already moved the machine out of SPEAKING. So this is the one place that
+                # can say a reply was delivered whole, which is what a recovery means.
+                self.quality.response_delivered()
                 self._state.to(State.LISTENING)
                 self._endpointer.reset()
+            else:
+                self.quality.agent_stopped_speaking()
             await self._say({"type": ServerMessage.AUDIO_END})
+            logger.info("session.quality", **self.quality.summary())
 
-    async def _interrupt(self) -> None:
+    async def _interrupt(self, heard: bytes = b"") -> None:
         # The new turn is begun before the old one is stopped, and the order is the
         # whole correctness of this method.
         #
@@ -319,8 +448,17 @@ class VoiceSession:
         # immediately, so the transport drops it without depending on how quickly the
         # producer stops.
         self._turns.drop_playout()
+        self._barge = None
         self._begin_listening()
         await self._stop_speaking()
+
+        # The audio that proved this was an interruption, handed to the turn it started.
+        # Without it the new turn begins from whatever arrives after the decision, so the
+        # agent hears an interruption from its second word onward and answers a fragment.
+        if heard and self._frames is not None:
+            for start in range(0, len(heard), FRAME_BYTES):
+                self._frames.put_nowait(heard[start : start + FRAME_BYTES])
+
         await self._say({"type": ServerMessage.READY})
 
     async def _stop_speaking(self) -> None:
@@ -340,20 +478,24 @@ class VoiceSession:
         status = self._turns.status(chunk.generation, live={self._state.generation})
         if status is AudioStatus.WAIT:
             # Held until they stop, and bounded, because an unbounded poll on a flag is how a
-            # turn hangs in silence. A flag left set by a path nobody thought about should cost
-            # a late answer, not the whole turn: this exact loop spun forever the first time,
-            # because nothing cleared `user_speaking` when the endpoint fired.
-            deadline = time.monotonic() + MAX_HOLD_S
+            # turn hangs in silence. This exact loop spun forever the first time, because
+            # nothing cleared `user_speaking` when the endpoint fired.
+            #
+            # The release repairs the flag rather than bypassing the gate, which is the
+            # correction. Forcing this chunk through leaves the stuck state in place, so the
+            # next chunk waits the full three seconds again and the whole answer arrives one
+            # slice every three seconds. Clearing it once fixes every chunk after it.
+            held = time.monotonic()
             while (
                 self._turns.status(chunk.generation, live={self._state.generation})
                 is AudioStatus.WAIT
-                and time.monotonic() < deadline
             ):
+                if time.monotonic() - held > STUCK_HOLD_S:
+                    logger.warning("session.hold_released", generation=chunk.generation)
+                    self._turns.note_user_stopped(count_turn=False)
+                    break
                 await asyncio.sleep(0.02)
             status = self._turns.status(chunk.generation, live={self._state.generation})
-            if status is AudioStatus.WAIT:
-                logger.warning("session.hold_expired", generation=chunk.generation)
-                status = AudioStatus.SEND
 
         if status is AudioStatus.BLOCK:
             return
@@ -366,6 +508,10 @@ class VoiceSession:
 
         if self._announced != chunk.generation:
             self._announced = chunk.generation
+            # Here rather than where the chunk was produced. The agent starts speaking
+            # when audio reaches the listener, and a chunk that was synthesised and then
+            # blocked was never spoken.
+            self.quality.agent_started_speaking()
             await self._say(
                 {
                     "type": ServerMessage.AUDIO_START,
@@ -375,9 +521,23 @@ class VoiceSession:
             )
 
         # Playout advances by the audio's own duration, not by how long the send took, because
-        # a chunk starts playing when the previous one ends. An MP3 frame at this bitrate is
-        # roughly 24ms; the estimate only has to be close enough to bound the wait.
-        self._turns.note_audio_queued(len(chunk.data) / 30000)
+        # a chunk starts playing when the previous one ends.
+        #
+        # The rate comes from the synthesiser rather than from a constant here. The constant
+        # was 30000 bytes a second, five times the 6000 that 48 kbit/s actually is, so the
+        # playout clock ran five times fast and the 900ms grace period expired after 180ms of
+        # real speech. A number with no derivation in the code that reads it is a number
+        # nobody can check.
+        played = playout_seconds(chunk.data, self._bytes_per_second)
+        self._turns.note_audio_queued(played)
+
+        # Filler counts toward the playout estimate and not toward the answer's numbers,
+        # and the split is deliberate. For deciding whether to hold a chunk, filler is
+        # audio the listener is hearing. For asking whether synthesis kept up with
+        # playback, filler is not the reply, and counting it would flatter the ratio using
+        # a file read off disk. `TurnClock` exists to keep exactly this distinction.
+        if self.clock is not None and self.clock.first_answer_audio_ms is not None:
+            self.quality.note_answer_audio(played)
 
         async with self._send:
             await self._transport.send_bytes(chunk.data)

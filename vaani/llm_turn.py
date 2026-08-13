@@ -19,6 +19,7 @@ import structlog
 
 from llm import ChatClient, ChatMessage
 from llm.types import StreamCompleted, TextChunk, ToolCall, ToolCallsRequested
+from vaani.grounding import sourced
 from vaani.spans import LLM_GENERATE, stage_span
 from vaani.tools import ToolError, dispatch, tool_schemas
 from vaani.turn import SYSTEM_PROMPT
@@ -49,6 +50,11 @@ class StreamedTurn:
         self._llm = llm or ChatClient()
         self._provider = provider
         self._max_tool_rounds = max_tool_rounds
+        # Figures the tools returned during this turn, for the validator that runs
+        # between here and the synthesiser. Populated as the rounds complete, which is
+        # before any sentence containing a number can have been flushed: a reply cannot
+        # quote a threshold it has not asked for yet.
+        self.sourced: set[float] = set()
 
     async def run(
         self, question: str, still_current: Callable[[], bool] | None = None
@@ -76,6 +82,7 @@ class StreamedTurn:
         ]
         started = time.monotonic()
         first_token = False
+        self.sourced = set()
 
         for round_index in range(self._max_tool_rounds + 1):
             requested: list[ToolCall] = []
@@ -130,7 +137,11 @@ class StreamedTurn:
                 return
 
             messages.append(_assistant_asking_for(requested))
-            messages.extend(_result_of(call) for call in requested)
+            results = [_result_of(call) for call in requested]
+            messages.extend(results)
+            # What the tools actually said, as figures. Everything the reply is then
+            # allowed to state, along with what the user said themselves.
+            self.sourced |= sourced(*[message.content for message in results])
 
 
 def _assistant_asking_for(calls: list[ToolCall]) -> ChatMessage:

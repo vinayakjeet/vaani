@@ -10,6 +10,9 @@ build/
 .coverage
 htmlcov/
 .DS_Store
+# Fetched by scripts/fetch_models.py against a pinned digest, not committed. Eleven
+# megabytes of weights in a repo makes every clone pay for two optional ablation arms.
+models/
 SPEC.md
 BACKLOG.md
 LEARNING.md

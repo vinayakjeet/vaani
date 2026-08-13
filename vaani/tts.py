@@ -33,6 +33,20 @@ VOICE_EN_IN = "en-IN-NeerjaNeural"
 # microphone in the other direction.
 AUDIO_MIME = "audio/mpeg"
 
+# How many bytes of this provider's output is one second of speech. 48 kbit/s at a
+# constant bitrate, which is the only format edge-tts emits, so a byte count maps to
+# playback time exactly rather than approximately.
+#
+# It belongs to the provider rather than to the caller, and that is the correction.
+# The session estimated playout as `len(chunk) / 30000`, a number with no derivation
+# anywhere, which ran the playout clock five times too fast: the grace period that is
+# supposed to hold audio for 900ms of real speech expired after 180ms of it. Bolna
+# refuses to derive duration from byte length for compressed audio at all, because a
+# variable bitrate makes the sum wrong without saying so. Ours is constant and known,
+# so the honest version is for the provider to declare its rate and for a mismatched
+# fallback to be refused at construction.
+EDGE_BYTES_PER_SECOND = 48_000 // 8
+
 
 class TtsError(Exception):
     """Synthesis failed or produced nothing playable."""
@@ -43,6 +57,7 @@ async def speak_as_they_arrive(
     tts: TtsProvider,
     voice: str = VOICE_HI,
     on_sentence: Callable[[str], Awaitable[None]] | None = None,
+    validate: Callable[[str], str] | None = None,
 ) -> AsyncIterator[bytes]:
     """Audio for each sentence as soon as the token stream completes that sentence.
 
@@ -60,11 +75,21 @@ async def speak_as_they_arrive(
     sentences = 0
     async for sentence in from_stream(tokens):
         sentences += 1
+
+        # The guardrail sits here rather than after synthesis, which is the only place it
+        # can sit. Audio cannot be un-said, so a check that runs on a finished reply is a
+        # check that runs after the wrong number has been spoken.
+        spoken = sentence if validate is None else validate(sentence)
+        if not spoken.strip():
+            continue
+
         if on_sentence is not None:
             # Reported before synthesis, so the transcript pane shows the words at
-            # the moment they exist rather than after the audio for them arrives.
-            await on_sentence(sentence)
-        async for chunk in tts.synthesize(sentence, voice, index=sentences):
+            # the moment they exist rather than after the audio for them arrives. The
+            # validated text, not the model's, so the pane cannot show a figure the
+            # listener was deliberately not told.
+            await on_sentence(spoken)
+        async for chunk in tts.synthesize(spoken, voice, index=sentences):
             yield chunk
 
     logger.info("tts.stream_done", provider=tts.name, sentences=sentences)
@@ -73,8 +98,29 @@ async def speak_as_they_arrive(
 class TtsProvider(Protocol):
     name: str
     mime: str
+    # Bytes of output per second of speech, so a caller can turn a chunk into a
+    # duration without knowing the codec. Zero means the provider cannot say, which a
+    # variable-bitrate encoder cannot, and a caller must then not guess.
+    bytes_per_second: int
 
     def synthesize(self, text: str, voice: str, index: int = 0) -> AsyncIterator[bytes]: ...
+
+
+def _rate(provider: object) -> int:
+    """A provider's encoded byte rate, or zero when it does not declare one."""
+    return int(getattr(provider, "bytes_per_second", 0) or 0)
+
+
+def playout_seconds(data: bytes, bytes_per_second: int) -> float:
+    """How long this chunk takes to play, or zero when that cannot be derived.
+
+    Zero rather than an estimate. A confidently wrong duration is worse than an
+    absent one here, because the audio gate's grace period and the playout estimate
+    both trust it, and both fail quietly in the direction of talking over somebody.
+    """
+    if bytes_per_second <= 0:
+        return 0.0
+    return len(data) / bytes_per_second
 
 
 class EdgeTts:
@@ -87,6 +133,7 @@ class EdgeTts:
 
     name = "edge-tts"
     mime = AUDIO_MIME
+    bytes_per_second = EDGE_BYTES_PER_SECOND
 
     async def synthesize(
         self, text: str, voice: str = VOICE_HI, index: int = 0
@@ -183,6 +230,19 @@ class FailingOverTts:
                 f"fallback speaks {fallback.mime} and the primary speaks {primary.mime}; "
                 "playback cannot switch codecs mid-answer"
             )
+        # Read defensively. A provider written before this field existed should degrade to
+        # "cannot say", which stops the playout estimate, rather than taking a live turn down
+        # with an AttributeError from inside a constructor. Instrumentation that throws turns
+        # a missing field into an outage, which this project has already paid for once.
+        if _rate(primary) != _rate(fallback):
+            # Same argument one level down. The playout estimate is a byte count
+            # divided by a rate, and after a mid-answer failover the remaining chunks
+            # would be measured at the wrong rate, so the gate would hold or release
+            # audio on a clock that silently changed halfway through the reply.
+            raise TtsError(
+                f"fallback encodes at {_rate(fallback)} bytes/s and the primary at "
+                f"{_rate(primary)}; playout could not be timed across the switch"
+            )
 
         self._primary = primary
         self._fallback = fallback
@@ -190,6 +250,7 @@ class FailingOverTts:
         self._failed_over = False
         self.name = f"{primary.name}+{fallback.name}"
         self.mime = primary.mime
+        self.bytes_per_second = _rate(primary)
 
     @property
     def failed_over(self) -> bool:

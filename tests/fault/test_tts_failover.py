@@ -6,6 +6,7 @@ import pytest
 
 from vaani.tts import (
     AUDIO_MIME,
+    EDGE_BYTES_PER_SECOND,
     VOICE_EN_IN,
     FailingOverTts,
     FailoverReason,
@@ -24,9 +25,11 @@ class Voice:
         chunks: int = 2,
         fail_after: int | None = None,
         mime: str = AUDIO_MIME,
+        bytes_per_second: int = EDGE_BYTES_PER_SECOND,
     ) -> None:
         self.name = name
         self.mime = mime
+        self.bytes_per_second = bytes_per_second
         self.said: list[str] = []
         self.voices: list[str] = []
         self._chunks = chunks

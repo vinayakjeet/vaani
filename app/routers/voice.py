@@ -17,7 +17,7 @@ a worse experience nobody can debug.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 import structlog
@@ -36,6 +36,7 @@ from vaani.protocol import (
 from vaani.session import Incoming, VoiceSession
 from vaani.stt import ChunkedStt, GroqWhisper, RecoveringStt
 from vaani.tts import VOICE_HI, EdgeTts, FailingOverTts
+from vaani.turn_taking import TurnTaking
 
 logger = structlog.get_logger(__name__)
 
@@ -109,25 +110,46 @@ class SocketTransport:
         await self._socket.send_bytes(data)
 
 
-def build_answer() -> Callable[[AsyncIterator[bytes], Callable[[], bool]], AsyncIterator[bytes]]:
+def build_answer(
+    transcriber: GroqWhisper, tts: FailingOverTts
+) -> Callable[[AsyncIterator[bytes], Callable[[], bool]], AsyncIterator[bytes]]:
     """The overlapped pipeline, as the one callable a session needs.
 
     Built per session rather than per process so a turn's state cannot leak into
     the next visitor's, and so the endpointer belongs to one conversation.
     """
-    transcriber = GroqWhisper()
     pipeline = StreamingPipeline(
         # The batch path behind the chunked one. A dropped stream is retried through
         # the endpoint that takes a whole file, which is slower and works, and it is
         # the other mechanism rather than a retry of the one that just failed.
         stt=RecoveringStt(ChunkedStt(transcriber), transcriber),
         turn=StreamedTurn(llm=ChatClient()),
-        # A second voice behind the first. The primary is unofficial with no uptime
-        # promise, so this path runs whenever it breaks rather than only on the day
-        # somebody remembers to test it.
-        tts=FailingOverTts(EdgeTts(), EdgeTts()),
+        tts=tts,
     )
     return pipeline.run
+
+
+def build_backchannel_check(
+    transcriber: GroqWhisper,
+) -> Callable[[bytes], Awaitable[bool]]:
+    """Whether a short interruption was an acknowledgement rather than a question.
+
+    One transcription of the interrupting audio, on the path where the agent has already
+    stopped talking, so the round trip costs a resume rather than a reply. The alternative
+    is what Bolna can afford and this stack cannot: a persistent recogniser socket handing
+    back interim transcripts to count words in, which on a chunked provider would be a
+    request every few hundred milliseconds for the whole of every reply.
+    """
+    turns = TurnTaking()
+
+    async def is_backchannel(pcm: bytes) -> bool:
+        transcript = await transcriber.transcribe(pcm)
+        # Counts and the verdict, never the words. This is user speech.
+        verdict = turns.is_backchannel(transcript.text, agent_speaking=True)
+        logger.info("voice.barge_checked", backchannel=verdict, chars=len(transcript.text))
+        return verdict
+
+    return is_backchannel
 
 
 async def speak_filler() -> AsyncIterator[bytes]:
@@ -166,11 +188,20 @@ async def voice(socket: WebSocket) -> None:
         return
 
     async with _in_session:
+        transcriber = GroqWhisper()
+        # A second voice behind the first. The primary is unofficial with no uptime
+        # promise, so this path runs whenever it breaks rather than only on the day
+        # somebody remembers to test it.
+        tts = FailingOverTts(EdgeTts(), EdgeTts())
         session = VoiceSession(
             transport=SocketTransport(socket),
-            answer=build_answer(),
+            answer=build_answer(transcriber, tts),
             filler=speak_filler,
             endpointer=Endpointer(semantic=True),
+            # Read off the synthesiser rather than assumed, so the playout estimate is a
+            # byte count divided by the rate the audio was actually encoded at.
+            bytes_per_second=tts.bytes_per_second,
+            backchannel=build_backchannel_check(transcriber),
         )
         try:
             await session.run()

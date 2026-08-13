@@ -48,6 +48,12 @@ class ServerMessage(StrEnum):
     AUDIO_START = "audio_start"
     AUDIO_END = "audio_end"
     ERROR = "error"
+    # Playback is held rather than stopped: the user has started talking and it is not yet
+    # known whether they interrupted or agreed. RESUME follows if it was a backchannel, and
+    # READY follows if the turn was really cut off. Pausing before deciding is what makes a
+    # short "haan" cost nothing instead of costing the reply.
+    PAUSE = "pause"
+    RESUME = "resume"
 
 
 class ProtocolError(ValueError):

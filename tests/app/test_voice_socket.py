@@ -37,8 +37,12 @@ def stub_providers(monkeypatch: pytest.MonkeyPatch) -> None:
     async def filler():
         yield b"achha"
 
-    monkeypatch.setattr(voice, "build_answer", lambda: answer)
+    monkeypatch.setattr(voice, "build_answer", lambda _transcriber, _tts: answer)
     monkeypatch.setattr(voice, "speak_filler", filler)
+    # No recogniser either, so a suspected interruption resolves without a request. The
+    # verifier's own behaviour is `tests/vaani/test_session.py`; here it must only not
+    # reach the network.
+    monkeypatch.setattr(voice, "build_backchannel_check", lambda _transcriber: None)
 
 
 def speak(socket, frames: int, generation: int = 1) -> None:

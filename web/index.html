@@ -256,7 +256,49 @@ function flushFallback() {
   new Audio(URL.createObjectURL(blob)).play().catch(() => {});
 }
 
+// How many consecutive frames over the threshold pause playback locally. Three frames is
+// 60ms, the same figure the server's endpointer uses to tell a syllable from a click, and
+// it is the smallest number that does not stop the agent every time a chair creaks.
+const PREEMPT_FRAMES = 3;
+let loudFrames = 0, preempted = false;
+
+// Stop playing before the server has decided, then let it confirm or resume.
+//
+// Barge-in otherwise costs a full round trip: the server detects speech, cancels the
+// generation, stops sending, and only then does the sound in the room stop. The user has
+// been talking over the agent for all of it. Pausing on the client's own level detector is
+// the mechanism X-Talk describes, and it is what puts a 100ms barge-in budget in reach
+// without the server changing at all.
+//
+// The client deliberately does not decide anything else. It pauses; the server owns
+// whether the turn is cancelled, because only the server has the transcript that tells a
+// "haan" from a question. A client that cancelled locally would kill the reply on every
+// acknowledgement, which is the behaviour this whole mechanism exists to stop.
+function preempt(rms) {
+  if (!audioEl || audioEl.paused || preempted) {
+    if (rms < THRESHOLD) loudFrames = 0;
+    return;
+  }
+  loudFrames = rms >= THRESHOLD ? loudFrames + 1 : 0;
+  if (loudFrames < PREEMPT_FRAMES) return;
+
+  preempted = true;
+  audioEl.pause();
+  stage("play", "on", "paused");
+  setState("you spoke, holding", "warn");
+}
+
+function resumePlayback() {
+  loudFrames = 0;
+  if (!preempted) return;
+  preempted = false;
+  if (audioEl) audioEl.play().catch(() => {});
+  setState("speaking", "live");
+}
+
 function closePlayback() {
+  loudFrames = 0;
+  preempted = false;
   flushFallback();
   try { if (mediaSource && mediaSource.readyState === "open") mediaSource.endOfStream(); } catch (e) {}
   ended = true;
@@ -348,6 +390,16 @@ function handle(message) {
   switch (message.type) {
     case "ready":
       stage("vad", "on", "waiting");
+      // READY rather than RESUME after a local pause means the server judged it a real
+      // interruption, so the held audio is never coming. The buffer is replaced rather
+      // than resumed: appending the next turn's answer to a paused buffer holding the
+      // abandoned one splices two replies into a single stream.
+      if (preempted) {
+        preempted = false;
+        closePlayback();
+        openPlayback();
+        setState("listening", "live");
+      }
       break;
 
     case "transcript":
@@ -374,6 +426,24 @@ function handle(message) {
     case "audio_start":
       stage("tts", "done", "");
       setState("speaking", "live");
+      break;
+
+    case "pause":
+      // The server agrees the user has started, so what the client already did was
+      // right. Sent anyway because the client may not have detected it: server-side
+      // detection sees the frames it actually received, and the two do not always agree.
+      if (!preempted && audioEl && !audioEl.paused) {
+        preempted = true;
+        audioEl.pause();
+        stage("play", "on", "paused");
+        setState("you spoke, holding", "warn");
+      }
+      break;
+
+    case "resume":
+      // A backchannel. Nothing was thrown away, so the held audio simply continues and
+      // the user is not made to ask their question again for having said "haan".
+      resumePlayback();
       break;
 
     case "audio_end":
@@ -434,6 +504,8 @@ function meter(pcm) {
   fill.style.width = pct + "%";
   fill.className = "fill" + (rms >= THRESHOLD ? " over" : "");
   levelEl.textContent = "level " + Math.round(rms);
+
+  preempt(rms);
 
   // The client's own view of when speech stopped, which is what its timings are
   // measured from. The server decides the real endpoint; this only has to be close

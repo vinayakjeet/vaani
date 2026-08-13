@@ -120,6 +120,80 @@ a span that silently never ends is worse than a short one that admits it.
 
 `vaani.playback.queued_ms`, `vaani.playback.reported`.
 
+## Time to first audio, which is the headline and needs two numbers
+
+**Starts** at the last frame of user speech. Not at endpoint-detected, not at
+request-received, not at socket receive. The endpoint wait is inside the number,
+which is between 250 and 700ms that most published figures exclude, and it is the
+part a listener actually experiences as the agent being slow to react.
+
+**Ends** at the first audio chunk of the turn being written to the socket.
+
+Two numbers are recorded and both are published:
+
+- `first_audio_ms`, the first audio of any kind, filler included.
+- `first_answer_audio_ms`, the first audio *of the answer*.
+
+**The headline target is the second one**, and this is the definition most open to
+being quietly gamed. A filler acknowledgement is audio, so a system that counted it
+could hit any target by learning to say "achha" quickly. A configuration that met
+p95 with filler publishes its filler rate beside the number, and a turn covered by
+filler is a turn the answer was late in.
+
+The clock is backdated rather than started at the endpoint: `silence_ms` has already
+elapsed by the time the endpointer fires, so `TurnClock` subtracts it. An earlier
+version read that value after the endpointer had been reset, so the backdating was
+always zero and the flattering clock shipped behind a comment saying it had not.
+Where you start the measurement is the measurement, and so is when you read it.
+
+## Barge-in latency, which is now three numbers rather than one
+
+M2.4 measures this and it got harder to define, because barge-in stopped being one
+event. Speech over the agent is a hypothesis first and a decision second, so there
+are three boundaries and reporting only the friendliest of them would be the same
+dishonesty as starting the first-audio clock after endpointing.
+
+**Starts**, for all three: the first frame of the interrupting speech, meaning the
+first frame that later turns out to have been part of it. Determined after the fact
+from the frame log, not from when detection fired, for the same reason the
+first-audio clock starts at the last frame of speech rather than at the endpoint.
+
+- **`bargein.paused_ms`** ends when audio stops reaching the listener. That is the
+  earlier of the client pausing its own playback on its level detector and the
+  server's PAUSE arriving. This is the number a listener perceives as the agent
+  shutting up, and it is the one a 100ms budget is about.
+- **`bargein.committed_ms`** ends when the turn is actually abandoned: the
+  generation moves and in-flight generation and synthesis are cancelled. On the
+  duration path this is 800ms of sustained speech by construction. On the verified
+  path it includes a transcription round trip.
+- **`bargein.resumed_ms`** ends when held audio resumes after a backchannel. It only
+  exists on turns that were not interruptions at all, and it is the cost the
+  verification arm charges for not cutting somebody off who said "haan".
+
+**Excludes** nothing on the grounds of being somebody else's fault. The
+transcription in the verified path is inside `committed_ms` even though it is a
+provider's latency, because the user is waiting through it either way.
+
+Reporting only `paused_ms` would be the flattering number: audio stops quickly and
+the turn is still alive behind it. Reporting only `committed_ms` would understate
+what the listener perceives. Both are published, with the split between duration-path
+and verified-path turns stated, because they are different distributions and averaging
+them hides the technique.
+
+## The playout estimate is not a measurement
+
+`TurnTaking._playing_until` is an estimate of when queued audio finishes playing,
+advanced by each chunk's own duration rather than by when it was sent, because audio
+is handed to the transport far faster than real time. It exists to decide whether to
+hold a chunk, and it is derived: byte count divided by the synthesiser's declared
+encoded rate.
+
+It is **not** a latency measurement and must not appear in the waterfall. A provider
+that cannot declare its rate returns zero, and then the estimate does not advance at
+all, which is the honest failure. `vaani.playback.queued_ms` on the span is a
+different quantity from this one and the two are easy to confuse, which is how the
+constant behind this estimate went unchecked at five times the correct value.
+
 ## What the turn span is
 
 `turn` wraps all of the above for one utterance. Its duration is the number a

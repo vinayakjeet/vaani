@@ -489,3 +489,170 @@ emitted is audio the user heard, but it is **not part of the reply**, so countin
 
 This lands directly on M2.12: the moment we emit backchannels, they must be marked as a
 different kind of audio or they will corrupt the transcript we are trying to protect.
+
+
+## Fifth pass, 2026-08-13: the orchestration end to end, and papers as full text
+
+The earlier passes read three files of Bolna and a set of abstracts. This one read the
+orchestration properly and pulled full texts where they exist. Two of the previous pass's
+claims were overstated and are corrected first, because a note that flatters a source is
+worse than no note.
+
+### Read directly this time
+
+`bolna/agent_manager/task_manager.py` in the regions that decide behaviour:
+`__process_output_loop`, `__listen_synthesizer`, `_handle_transcriber_output`, `sync_history`,
+`__cleanup_downstream_tasks`, `_stage_assistant_history` and its pair,
+`update_transcript_for_interruption`, `__check_for_backchanneling`,
+`compute_last_ai_audio_timestamp`. Plus `interruption_manager.py`,
+`mark_event_meta_data.py`, `output_handlers/default.py`, `constants.py`, and the Flux
+event handling in `transcriber/deepgram_transcriber.py`. Pipecat and LiveKit source still
+not read.
+
+### Correction 3: RESPOND's user study is six people, and its own participants disliked the feature
+
+The third pass wrote that RESPOND's user studies "notably with older adults, report higher
+perceived naturalness". The full text says the pilot is "six participants (4 female, 2
+male)" from the lab community, and there are no older adults in it. Worse for the claim we
+built on it: participants reported that "excessive backchannels, especially mid-sentence
+ones, were considered distracting and unnatural", with only sentence-final ones felt as
+natural. Backchannel is also the weakest of its three classes at 0.697 F1 on MM-F2F against
+0.770 and 0.773 for the others.
+
+The item survives as M2.16 with a constraint taken from the finding instead of the framing:
+emit only at a boundary, and report the rate. This is the second time in this project that
+reading past an abstract weakened a recommendation, which is an argument for the habit
+rather than a complaint about it.
+
+### Correction 4: our own playout estimate was wrong, and Bolna's code says why
+
+`output_handlers/default.py` has `_playout_duration`, which returns **zero** rather than a
+number when the format is not in `UNCOMPRESSED_AUDIO_FORMATS`. Its comment: compressed audio
+"would otherwise report a confidently wrong duration, which the completion watchdog's playout
+estimate would then trust".
+
+We adopted their playout line in M2.10 and then fed it MP3 byte counts divided by 30000, a
+constant with no derivation anywhere. edge-tts is 48 kbit/s constant bitrate, which is 6000
+bytes a second, so the estimate ran five times fast and the 900ms grace period expired after
+180ms. Recorded in LEARNING.md. Adopting a mechanism from a codebase and not the guard beside
+it is a specific and repeatable failure mode.
+
+### The mechanism we missed twice: stage the turn, commit it on send
+
+The most useful thing in the whole file, and it is not in `sync_history` at all.
+`_stage_assistant_history` holds the assistant's text keyed by sequence id;
+`_commit_staged_assistant_history` writes it to the conversation record at the moment its
+audio clears the SEND gate; the BLOCK path calls `_drop_staged_assistant_history` instead.
+
+So the ordinary interrupted turn needs no reconstruction: text whose audio never reached the
+transport never enters the record. The duration-proportional reconstruction the fourth pass
+admired is the *fallback* for a turn that was half spoken. We had read the hard path and
+missed the easy one, and the easy one is what makes the hard one rare. Tracked as M2.7b, and
+it is the reason to decide the conversation record's shape now rather than after building it.
+
+### Guards worth having read
+
+- **A stuck flag is repaired, not stepped over.** The WAIT branch of the output loop checks
+  `user_speech_staleness_s()` against `STUCK_AUDIO_GATE_RELEASE_S = 3.0` and calls
+  `on_user_speech_ended(update_utterance_time=False)`. Our version forced the chunk through
+  and left the flag set, so every later chunk waited again. Same timeout, arrived at
+  independently; different thing done with it. In LEARNING.md.
+- **Control signals must still flow on the blocked path.** The end-of-stream byte is sent
+  through `handle()` even when the audio is discarded, because otherwise the final mark is
+  never created, no echo arrives, and `is_audio_being_played` latches true for the rest of the
+  call. A whole class of bug: the drop path skips the message that clears the state.
+- **`update_transcript_for_interruption` returns empty when the heard text is not found in
+  what was spoken.** The sixth guard, missed by the fourth pass. Stale turn data corrupts the
+  record quietly; losing it is visible.
+- **The global "what was heard" accumulator is used only when the target turn is unknown**,
+  and `target_from_evidence` refuses to trim at all when the target came from a blind
+  fallback. Both already recorded; both confirmed by reading the code rather than the summary.
+- **`compute_last_ai_audio_timestamp` clamps the playout estimate to now**, so measured
+  silence can only shrink. Their comment states the safety property explicitly: it can delay
+  a hangup but never cause an earlier one. A good habit for any estimate feeding a watchdog.
+
+### The speculative-prefill blocker, and what actually unblocks it
+
+The fourth pass concluded that our recogniser emits no confidence, so SPEC's speculative
+prefill has no signal to fire on. The Flux handling confirms the shape: `EagerEndOfTurn`
+above 0.5 starts a cancellable `eager_llm_task`, `TurnResumed` cancels it, `EndOfTurn` above
+0.7 is the real thing, `EOT_TIMEOUT_MS = 500` forces the decision, and an empty `EndOfTurn`
+with an eager guess outstanding cancels it. There is also a stall floor so a turn cannot stay
+open forever: `max(3.0, eot_timeout * 4)`.
+
+What the fourth pass did not notice is that **smart-turn supplies exactly that signal**. It
+returns a probability, not a boolean. Two thresholds on it plus a cancellable task is Bolna's
+mechanism with our own model, and it needs no vendor with a streaming socket. That makes
+M1.12 a prerequisite for the speculative-prefill row rather than a parallel improvement.
+
+### Papers, as full text
+
+**X2-Turn** (arXiv 2608.10878), read in full. Five frame-level turn states, and the naming
+matters: `idle`, `noidle` for "active speech without semantic content (e.g. the initial
+syllables of an utterance)", `incomplete`, `complete`, `backchannel`. 80ms frames on a
+Voxtral Realtime backbone. Latency is defined as `L = tau - (e_i - s_i)`, so it can be
+negative. At tau = 480ms: Chinese 91.0% complete, 93.0% incomplete, 96.0% backchannel, 288ms
+latency; English 92.1% complete, 84.6% incomplete, 225ms. At tau = 320ms: Chinese average
+90.67% at **120ms**, English 85.09% at **65ms**. Training is 26k hours of ASR (14k Chinese,
+12k English) plus 126 hours of EasyTurn and 249 hours of Fisher, labelled with
+Qwen3-ForceAligner for word timestamps and Qwen3.5-Plus for word-level state.
+
+Two things to take. Their tau table is the reporting shape our VAD knob should have, one knob
+with both axes and no argument about the right setting: tracked as M4.13. And turn
+predictions deliberately do not feed back into ASR decoding, so "turn state prediction errors
+do not affect subsequent ASR decoding". Our partials feed the endpointer and never the
+reverse, so we already hold that property; worth knowing it is a design choice somebody
+defends rather than an accident.
+
+**X-Talk** (arXiv 2512.18706), read in full, and the most directly useful paper in the
+sweep. Client-side Silero pauses TTS playback the moment speech is detected, then lightweight
+semantic verification either terminates synthesis and inference or resumes the suspended
+playback, with the frontend notified to resume on a false interruption. Their
+false-interruption filter is three rules: minimum audio length 0.5s, empty ASR output or a
+single character or digit, and a transcription containing only filler words. That is M2.6's
+design and M2.11's, arrived at from a different direction.
+
+Their latency table also gives us the honest comparison SPEC A7 wants: 284ms and 272ms at 5s
+input, up to 420ms and 610ms at 30s, with the explicit statement that the frontend VAD's
+"500 ms end-of-utterance silence threshold ... is not included in latency calculation". On
+our clock that is 772ms to 1110ms. A dated, first-party, reproducible figure that needs no
+vendor's marketing number. Tracked as M4.14.
+
+**RESPOND** (arXiv 2603.21682), read in full. Three classes: turn claim, backchannel, stay
+silent. 5-second windows, 50ms stride, word-level granularity, bounded in practice by 250 to
+500ms of ASR latency. Two knobs in [0,1] with named presets: backchannel intensity 0.1
+passive and 0.6 collaborative, turn-claim aggressiveness 0.0, 0.2, 0.8. Accuracy 0.756 on
+MM-F2F and 0.87 on CANDOR. See correction 3 for what the user study actually says.
+
+**RelayS2S** (arXiv 2603.23346). A fast duplex S2S model drafts a response prefix streamed
+straight to TTS while a slower ASR-to-LLM path generates the continuation, with a learned
+verifier controlling the handoff. Described by its author as a "lightweight, drop-in addition
+to existing cascaded pipelines" requiring no architectural modification to either component.
+P90 onset comparable to the S2S model at 99% of cascaded quality. Still a reference rather
+than a build: the fast path is a duplex speech model, which is non-goal 2 and needs a GPU.
+
+**Multi-Faceted Interactivity Alignment** (arXiv 2606.11167). Names the four canonical axes:
+pause handling, turn-taking, backchanneling, user interruption. Evaluated offline and in
+real-time multi-turn dialogue on Moshi and PersonaPlex, with an LLM-based reward for response
+quality included to stop interactivity gains degrading answers. That last detail is the same
+guard as our non-goal 15 and M5.2b: optimise interactivity, measure the answer, or you will
+trade one for the other without noticing.
+
+**Speculative End-Turn Detector** (arXiv 2503.23439, ACL 2026). A lightweight GRU locally
+finds silences; a Wav2vec model server-side decides whether a silence is a turn end or a
+pause. The two-tier split is the same shape as our duration threshold plus verification, at a
+different point in the pipeline. Code and data "available after review", so nothing to adopt.
+
+**VoiceAgentEval** (arXiv 2510.21244). Six business domains, 30 sub-scenarios, 12 models,
+automated plus human-in-the-loop across task execution, professional knowledge, adaptability
+and user experience. No metric definitions in the abstract or the landing page; would need
+the PDF to be useful, and it is a benchmark we are not scored against.
+
+### Metrics with a threshold somebody else defends
+
+Worth separating from the rest, because this sweep produced exactly one.
+`barge_in_recovery_rate` in `interruption_manager.py` carries the comment "Hamming benchmark:
+>90% good, <80% critical". Every other conversational-quality number found across two
+sessions of reading is a ratio with no published bar. Its mirror,
+`agent_interrupted_user_count`, counts the agent starting to speak inside the grace period
+and being cancelled, which our latency numbers currently score as a success. Both in M4.12.

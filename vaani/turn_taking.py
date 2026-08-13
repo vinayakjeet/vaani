@@ -48,6 +48,22 @@ STOP_WORDS: frozenset[str] = frozenset(
 DEFAULT_GRACE_MS = 900
 TURNS_BEFORE_GRACE = 2
 
+# Speech during playback long enough to stop the agent immediately, without waiting to hear
+# what it was. Bolna reaches this decision on a word count because Deepgram hands it interim
+# transcripts continuously; the chunked free stack has no interims to count, so duration is the
+# available proxy for the same judgement. Every Hinglish backchannel is short: "haan", "achha",
+# "hmm", "theek hai" all land under half a second, and a clause does not.
+#
+# Provisional and labelled as such, like every threshold in this project. The recorded corpus
+# sets it, and until then the number is the shape of the domain rather than a measurement.
+DEFAULT_COMMIT_MS = 800
+
+# Below the commit threshold the interruption is a hypothesis rather than a verdict, and this is
+# X-Talk's shape: pause playback the moment speech is detected, verify what it was, then either
+# cancel the turn or resume the held audio. Their minimum audio length for a valid interruption
+# is 0.5s, which is the same judgement from the other side.
+DEFAULT_VERIFY_MS = 200
+
 
 class AudioStatus(StrEnum):
     SEND = "send"
@@ -151,6 +167,60 @@ class TurnTaking:
     def drop_playout(self) -> None:
         """Queued audio was discarded, so nothing is playing."""
         self._playing_until = 0.0
+
+
+class Barge(StrEnum):
+    """What to do about speech that arrived while the agent was talking."""
+
+    IGNORE = "ignore"
+    PAUSE = "pause"
+    COMMIT = "commit"
+
+
+@dataclass
+class PendingBarge:
+    """One suspected interruption, accumulating evidence while it is still happening.
+
+    The reason this is a state machine rather than a boolean: an interruption that is
+    cancelled the instant speech is detected cannot be taken back, and roughly half of
+    what a Hinglish speaker says over an agent is an instruction to keep going. So a
+    short one is provisional. Playback pauses, the audio is kept, and the utterance is
+    identified before the turn is thrown away.
+
+    A long one is not provisional. Somebody who has been talking for `commit_ms` is not
+    agreeing with you, and making them wait for a transcription round trip to be heard
+    is the interruption latency this project is trying to bound.
+    """
+
+    commit_ms: int = DEFAULT_COMMIT_MS
+    verify_ms: int = DEFAULT_VERIFY_MS
+
+    speech_ms: int = field(default=0, init=False)
+    # Frames since the suspicion began, so a confirmed interruption starts the new turn
+    # with its own first syllable rather than from whatever arrived after the decision.
+    # Without this the agent hears an interruption from its second word onward.
+    audio: bytearray = field(default_factory=bytearray, init=False)
+    paused: bool = field(default=False, init=False)
+
+    def note(self, pcm: bytes, speech_ms: int) -> Barge:
+        """Add a frame, with how much *speech* has been heard in this utterance so far.
+
+        The count comes from the endpointer rather than from frames seen here, and that is
+        not tidiness. Counting every frame after speech started counted the trailing silence
+        too, so a 400ms "achha" followed by a pause reached the commit threshold and
+        interrupted anyway, with the log dutifully reporting 800ms of speech. One place
+        decides what speech is.
+
+        The audio keeps the silence. It is what the recogniser is given, and an utterance
+        with its pauses cut out transcribes worse than one with them left in.
+        """
+        self.audio += pcm
+        self.speech_ms = speech_ms
+        if self.speech_ms >= self.commit_ms:
+            return Barge.COMMIT
+        if self.speech_ms >= self.verify_ms:
+            return Barge.PAUSE
+        return Barge.IGNORE
 
 
 def heard_prefix(spoken: str, heard: str) -> str:

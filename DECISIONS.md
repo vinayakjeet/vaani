@@ -12,6 +12,143 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-13: The model may phrase an eligibility answer and may not introduce a number
+
+**Context:** M3.9 and M1.10, which turn out to be one decision from two ends. `vaani/tools.py`
+refuses to invent a threshold, and nothing stopped the model stating one in prose, which is
+what gets synthesised and played into somebody's ear. At the other end, the applicant's own
+figure arrives as speech: "pachaas hazaar" read as 50 rather than 50000 moves them across an
+income limit, and a model asked to both normalise that and reason about it will occasionally
+do one of those jobs to the other's cost.
+
+**Decision:** numbers become digits in code before the model reads them, and every figure in
+a reply is checked against a source before it is synthesised.
+
+`vaani/numerals.py` refuses rather than guesses. A run of number words containing anything
+it does not know is left exactly as spoken and reported in `unresolved`, which is the input
+M1.15's confirmation turn needs. Two adjacent unit words are ambiguous rather than additive,
+because Hindi says 55 as one word and "paanch pachaas" is therefore a misrecognition or a
+correction, both of which want a human to hear about it.
+
+`vaani/grounding.py` allows a reply the figures the tools returned plus the figures the user
+said themselves, and refuses everything else, replacing the reply rather than appending to
+it. The check runs per sentence between segmentation and synthesis, which is the only place
+it can run: audio cannot be un-said, so a check on a finished reply runs after the wrong
+number has been spoken.
+
+**Alternatives considered.** Prompting the model not to invent figures, which is the usual
+answer and is a probability rather than a guarantee, on the one number in the system that
+sends a person to an office. Allowing derived arithmetic so a reply can say "50000 above the
+limit", rejected because allowing derivable numbers allows most numbers and the guardrail
+stops being one; the cost is real and is reported as a refusal rate instead of argued away.
+Checking every figure regardless of size, rejected because "2. Form bharein" and "do
+documents" would refuse almost every reply: the boundary is three digits, which is the same
+boundary and the same reasoning `vaani/sentences.py` already uses to tell a list marker from
+an amount.
+
+**Consequences.** A legitimate reply that states a true subtraction is refused, and that is
+a deliberate false positive whose rate the ablation reports. The validated text is what
+reaches the transcript pane as well as the synthesiser, so the screen cannot show a figure
+the listener was deliberately not told. Biasing the recogniser toward scheme names (M1.11)
+landed in the same pass and carries its own hazard: a Whisper prompt is prepended to the
+decoder's context, so near-silence sometimes decodes as the prompt itself, and
+`vocabulary.is_echo` treats a transcript made only of bias terms as no speech, because no
+real question about a scheme consists solely of scheme names.
+
+## 2026-08-13: Barge-in pauses first and decides second, on two thresholds rather than a lexicon
+
+**Context:** M2.6's remaining half. Barge-in fired on any sustained speech, so "haan",
+"achha" and "theek hai" all killed the reply the speaker was agreeing with. Bolna decides
+this on a word count over interim transcripts, and it can: Deepgram hands it interims
+continuously over a persistent socket. The free stack is chunked transcription, where an
+interim costs a whole request over the whole utterance, so counting words during every
+reply would mean a provider request every few hundred milliseconds of every turn.
+
+**Decision:** two thresholds on one signal, and a pause that is not yet a cancellation.
+
+Speech during playback past `DEFAULT_COMMIT_MS`, 800ms, interrupts immediately with no
+transcript consulted, because nobody backchannels for that long and making a real
+interruption wait for a round trip is the barge-in latency we are bounding. Speech past
+`DEFAULT_VERIFY_MS`, 200ms, only pauses: the audio is held in the gate's WAIT state, the
+utterance is transcribed once after it ends, and `is_backchannel` decides whether the turn
+is cancelled or the held audio resumes. That is X-Talk's pause-verify-resume loop, and it
+is implementable here only because M2.9 already gave the gate a state that holds audio
+rather than dropping it.
+
+The buffered interrupting audio starts the turn it caused. Without it the new turn began
+from whatever arrived after the decision, so the agent heard an interruption from its
+second word onward and answered a fragment.
+
+**Alternatives considered:** a backchannel lexicon, rejected in the prior-art review
+already and worth restating, because Hinglish backchannels are an open set. Interrupting on
+duration alone, which is what shipped and cannot tell "haan" from "nahi ruko" at the same
+length. Running the recogniser continuously during playback to count words as Bolna does,
+rejected on cost: it is the one technique whose price is set by SPEC A4's chunked stack
+rather than by design. Committing on the transcript alone with no duration threshold,
+rejected because it makes every interruption pay a transcription before the agent stops
+talking, which is worse than what we had.
+
+**Consequences.** A verified interruption costs one transcription before the turn is
+abandoned, and the agent has already stopped talking by then, so the round trip buys a
+resume rather than delaying a reply. Both thresholds are provisional and labelled, set from
+the shape of the domain: the recorded corpus sets them, and until then this is a mechanism
+whose numbers are a guess even though its structure is not. A recogniser that cannot answer
+commits the interruption rather than resuming, because a failed check is not evidence of a
+backchannel and resuming over somebody who really did interrupt is the failure the whole
+mechanism exists to prevent. `web/index.html` pauses on its own level detector before the
+server has decided, so the sound in the room stops without waiting for the round trip, and
+the client deliberately decides nothing else: only the server has the transcript that tells
+an acknowledgement from a question.
+
+## 2026-08-13: Silero and smart-turn are arms with pinned digests, not upgrades
+
+**Context:** M1.16b ranked the tools worth adding. Two of them are reachable: Silero VAD
+for "is this speech at all", replacing a frame-energy threshold of 500 RMS that was written
+down as roughly a quiet room and never measured, and smart-turn v3 for "has this turn
+ended", against `vaani/completeness.py`'s word-order rule. The backlog deferred smart-turn
+on the grounds that it needs torch on a 512MB instance. That is no longer true: the
+published `smart-turn-v3.2-cpu.onnx` is 8.68MB and runs on onnxruntime alone.
+
+**Decision:** both are arms behind injected seams, `Endpointer.speech` and
+`Endpointer.completion`, with the energy detector and the rule as the defaults. Neither is
+selected by a flag, so a bench run constructs both explicitly and neither can be reached by
+accident. The model files are fetched by `scripts/fetch_models.py` against a pinned SHA-256
+and are not committed; absence is a supported state that runs the baseline arms, and there
+is no silent fallback, because a caller that asks for Silero and gets energy would publish
+an ablation row for a technique that never ran.
+
+**Two integration details decided rather than discovered.** Silero v5 takes exactly 512
+samples at 16kHz and the transport carries 320, and feeding it 320 does not raise: it
+returns a confident wrong number. Frames are buffered into windows and the last verdict
+stands between them, because reporting zero on the two frames in three that close no window
+would make speech stutter at 50Hz and the trailing-silence timer would never complete.
+smart-turn is asked once per turn, when trailing silence first reaches the short timeout,
+because at up to 100ms an inference fifty times a second is not an option and an earlier
+answer is about an utterance that is still arriving.
+
+**Alternatives considered:** replacing the energy detector outright, which is what "adopt
+Silero" usually means and which would delete the before that makes the ablation row
+meaningful. Committing the weights, rejected because eleven megabytes in a public repo
+makes every clone pay for two optional arms. Downloading at import, rejected because a
+cold Render container would pay for it on the first turn of the first session, which is
+already the slowest turn in the system. Reimplementing the mel filterbank from the formula
+and trusting it, rejected in favour of checking it against OpenAI's published
+`mel_filters.npz`: it agrees to 1.3e-9, and the version of this that ships broken is the
+one where the filterbank is off by a scale factor, the model returns confident numbers from
+noise, the suite stays green, and the ablation concludes that neural endpointing does not
+help.
+
+**Consequences.** `numpy` is in the dev group rather than only in the `models` extra, so
+the filterbank check runs in CI where no model file exists. The model-dependent tests skip
+in CI and run locally, which means the arms are exercised where the ablation numbers are
+produced and not on every push; that is a gap and it is recorded as one. Neither arm's
+accuracy on Hinglish is claimed anywhere: they are wired and verified structurally, and
+M4.2's corpus is what decides whether they are better than what they replace. Kokoro is
+still not started, for a reason worth writing down: at 82M parameters it needs either torch
+or a 310MB ONNX, plus espeak-ng as a system binary for Devanagari phonemisation, and none
+of that fits the 512MB instance that M1.8 exists to serve. It stays a bench-only
+possibility rather than a deployed one.
+
 ## 2026-08-12: Tail control by hedging and transport priority, not by more flushes
 
 **Context:** a tail-control brief proposed five mechanisms for the p95 floor: a hard

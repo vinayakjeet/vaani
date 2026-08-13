@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from vaani.endpoint import Endpointer
+from vaani.grounding import REFUSED
 from vaani.llm_turn import StreamedTurn
 from vaani.pipeline import StreamingPipeline, frames_until_endpoint
 from vaani.stt import Partial, SttError
@@ -168,3 +169,45 @@ async def test_the_recogniser_actually_receives_the_frames() -> None:
         pass
 
     assert stt.frames_seen == 4
+
+
+async def test_the_transcript_the_model_sees_has_its_numbers_as_digits() -> None:
+    """The applicant's own figure is the input to an eligibility comparison, so it is
+    normalised in code before the model reads it rather than by the model while it is
+    also reasoning about it."""
+    stt = ScriptedStt(final="meri aay pachaas hazaar hai")
+    flow, _tts = pipeline(stt, text("Theek hai."))
+
+    seen: list[str] = []
+
+    async def note(transcript: str) -> None:
+        seen.append(transcript)
+
+    async for _chunk in flow.run(frames(SPEECH), on_transcript=note):
+        pass
+
+    assert seen == ["meri aay 50000 hai"]
+
+
+async def test_a_figure_the_tools_never_returned_is_refused_before_synthesis() -> None:
+    """The guardrail on the real path, not beside it. Audio cannot be un-said, so a
+    check that runs on a finished reply runs after the wrong number was spoken."""
+    stt = ScriptedStt(final="pm jay ki limit kya hai")
+    flow, tts = pipeline(stt, text("Ayushman Bharat ki limit 800000 hai."))
+
+    async for _chunk in flow.run(frames(SPEECH)):
+        pass
+
+    assert tts.said == [REFUSED]
+
+
+async def test_a_figure_the_user_said_may_be_repeated_back() -> None:
+    """Otherwise a confirmation sentence is impossible, and confirming a high-stakes
+    figure is cheaper than one wrong eligibility answer."""
+    stt = ScriptedStt(final="meri aay teen lakh hai")
+    flow, tts = pipeline(stt, text("Aapki aay 300000 hai, theek hai."))
+
+    async for _chunk in flow.run(frames(SPEECH)):
+        pass
+
+    assert tts.said == ["Aapki aay 300000 hai, theek hai."]
