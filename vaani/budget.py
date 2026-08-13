@@ -85,6 +85,19 @@ class TurnClock:
         )
 
 
+def remaining_ms(clock: TurnClock, deadline_ms: int) -> float:
+    """How much of the listener's patience is left, not how long the pipeline has run.
+
+    The deadline is a promise to the person waiting, so it is measured from when they
+    stopped speaking. By the time an answer starts being produced the trailing silence
+    has already been spent, several hundred milliseconds of it, and a deadline that
+    restarts there promises 600ms and delivers 1300. Measured against the real clock a
+    turn can arrive already overdue, and then the filler is due immediately, which is
+    the correct answer rather than an edge case.
+    """
+    return max(0.0, deadline_ms - clock.elapsed_ms())
+
+
 async def speak_within(
     answer: AsyncIterator[bytes],
     filler: Callable[[], AsyncIterator[bytes]],
@@ -103,7 +116,7 @@ async def speak_within(
     already done, which is the opposite of what a deadline is for.
     """
     first = asyncio.ensure_future(anext(answer, None))
-    done, _pending = await asyncio.wait([first], timeout=deadline_ms / 1000)
+    done, _pending = await asyncio.wait([first], timeout=remaining_ms(clock, deadline_ms) / 1000)
 
     if not done:
         clock.filler_spoken = True

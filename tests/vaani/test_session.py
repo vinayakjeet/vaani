@@ -321,6 +321,28 @@ async def test_the_clock_starts_when_the_endpoint_fires() -> None:
     assert voice.clock.first_answer_audio_ms is not None
 
 
+async def test_the_clock_includes_the_silence_the_user_sat_through() -> None:
+    """The project's headline number, and the easiest one to flatter.
+
+    The endpoint fires only after the trailing silence has been waited out, so a clock
+    started there removes that wait from every figure: several hundred milliseconds,
+    in our favour. SPEC picks the harder clock deliberately, because most published
+    voice latency starts after endpointing and two systems quoting the same number can
+    differ by a factor of two in the only thing a listener perceives.
+
+    So first audio can never be reported as arriving sooner than the silence that
+    ended the turn.
+    """
+    voice, transport = session(*speech_then_silence())
+
+    task = await run_until_audio(voice, transport)
+    await stop(task)
+
+    assert voice.clock is not None
+    assert voice.clock.first_answer_audio_ms is not None
+    assert voice.clock.first_answer_audio_ms >= voice._endpointer.trailing_silence_ms - 40
+
+
 async def test_the_transport_is_actually_driven() -> None:
     """Guards the tests above, which all read what the transport received. A session
     that never sent anything would satisfy several of them."""

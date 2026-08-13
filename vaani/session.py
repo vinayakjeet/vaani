@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -200,15 +201,28 @@ class VoiceSession:
     async def _begin_answering(self) -> None:
         self._state.to(State.THINKING)
         generation = self._state.generation
-        # Reset before playback, because the endpointer changes job here: it stops
-        # answering "has the turn ended" and starts answering "is the user talking
-        # over us". Carrying the finished utterance's state into that question makes
-        # the answer yes immediately.
+        # Read before the reset, and that order is the whole measurement.
+        #
+        # The clock is backdated to the last frame of speech, which is `silence_ms`
+        # ago: the endpoint fires only once the trailing silence has been waited out.
+        # Starting it here instead would remove that wait from every number, several
+        # hundred milliseconds of it, in the flattering direction. SPEC picks the
+        # harder clock on purpose, because most published voice latency starts after
+        # endpointing and two systems quoting the same figure can differ by a factor of
+        # two in the only thing a listener perceives.
+        #
+        # The first version of this read `silence_ms` after the reset below had already
+        # zeroed it, so the backdating was always nothing and the flattering clock
+        # shipped behind a comment saying it had not. Where you start the measurement
+        # is the measurement, and so is when you read it.
+        spent_waiting = self._endpointer.silence_ms * 1_000_000
+        self.clock = TurnClock(started_ns=time.monotonic_ns() - spent_waiting)
+
+        # Reset after, because the endpointer changes job here: it stops answering
+        # "has the turn ended" and starts answering "is the user talking over us".
+        # Carrying the finished utterance's state into that question makes the answer
+        # yes immediately.
         self._endpointer.reset()
-        # The clock starts at the last frame of user speech, which is now: the
-        # endpoint has just fired. Not at request dispatch, and not at endpoint
-        # detection plus setup, because the listener started waiting here.
-        self.clock = TurnClock()
 
         self._speaking = SpeakingTurn(
             generation=generation, produce=lambda: self._audio(generation)

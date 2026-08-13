@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 
 import pytest
@@ -9,6 +10,7 @@ from vaani.budget import (
     FIRST_AUDIO_P50_MS,
     FIRST_AUDIO_P95_MS,
     TurnClock,
+    remaining_ms,
     speak_within,
 )
 
@@ -167,6 +169,47 @@ async def test_a_failing_answer_still_raises_after_filler() -> None:
     with pytest.raises(RuntimeError):
         async for _chunk in speak_within(broken(), filler, clock, deadline_ms=1):
             pass
+
+
+async def test_the_deadline_is_measured_from_the_listener_not_the_pipeline() -> None:
+    """A turn can arrive already overdue, and then the filler is due immediately.
+
+    The deadline is a promise to the person waiting, so it runs from when they stopped
+    speaking. By the time an answer starts being produced the trailing silence has
+    already been spent, several hundred milliseconds of it, and a deadline that
+    restarted there promised 600ms and delivered 1300 in a real browser.
+    """
+    overdue = TurnClock(started_ns=time.monotonic_ns() - 2_000_000_000)
+
+    assert remaining_ms(overdue, 600) == 0
+
+    heard = [
+        chunk async for chunk in speak_within(slow_answer(0.05)(), filler, overdue, 600)
+    ]
+
+    assert heard[0] == b"achha"
+    assert overdue.filler_spoken
+
+
+async def test_a_fresh_turn_still_gets_its_full_deadline() -> None:
+    """The other side of it. A prompt turn must not be given filler it did not need,
+    which is what a deadline of zero for everybody would do."""
+    fresh = TurnClock()
+
+    assert remaining_ms(fresh, 600) > 500
+
+    heard = [chunk async for chunk in speak_within(prompt_answer(), filler, fresh, 600)]
+
+    assert heard == [b"answer-1", b"answer-2"]
+    assert not fresh.filler_spoken
+
+
+async def test_a_backdated_clock_reports_the_wait_it_was_given() -> None:
+    """The session backdates by the trailing silence, so the number a listener
+    experiences includes the wait they actually sat through."""
+    clock = TurnClock(started_ns=time.monotonic_ns() - 700_000_000)
+
+    assert clock.elapsed_ms() >= 700
 
 
 async def test_the_clock_measures_forward() -> None:

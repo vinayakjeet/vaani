@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -64,16 +66,31 @@ def test_speech_then_silence_produces_a_transcript_and_audio() -> None:
         speak(socket, 30)
         go_quiet(socket, 40)
 
-        transcript = socket.receive_json()
-        reply = socket.receive_json()
-        audio_start = socket.receive_json()
-        audio = socket.receive_bytes()
+        # The filler comes first now, and that is correct rather than incidental.
+        # The clock starts at the last frame of speech, so by the time an answer is
+        # being produced the 700ms trailing silence has already outrun the 600ms
+        # deadline and the turn arrives overdue. Asserting a fixed order here would
+        # pin the flattering clock instead of the behaviour.
+        seen: list[dict] = []
+        audio: list[bytes] = []
+        for _ in range(8):
+            message = socket.receive()
+            if "text" in message:
+                seen.append(json.loads(message["text"]))
+                if seen[-1]["type"] == ServerMessage.AUDIO_END:
+                    break
+            elif "bytes" in message:
+                audio.append(message["bytes"])
 
-        assert transcript["type"] == ServerMessage.TRANSCRIPT
-        assert transcript["text"]
-        assert reply["type"] == ServerMessage.REPLY
+        kinds = [m["type"] for m in seen]
+
+        assert ServerMessage.TRANSCRIPT in kinds
+        assert ServerMessage.REPLY in kinds
+        assert ServerMessage.AUDIO_START in kinds
+        audio_start = next(m for m in seen if m["type"] == ServerMessage.AUDIO_START)
         assert audio_start["mime"] == "audio/mpeg"
-        assert audio == b"audio-bytes"
+        assert next(m for m in seen if m["type"] == ServerMessage.TRANSCRIPT)["text"]
+        assert b"audio-bytes" in audio
 
 
 def test_silence_alone_never_produces_a_turn() -> None:
