@@ -5,90 +5,279 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vaani</title>
 <style>
-  :root { color-scheme: dark; --bg:#0a0b0e; --fg:#e8ecf3; --muted:#8b93a7;
-          --line:#1e2430; --live:#3ddc97; --warn:#ffb454; }
+  :root { color-scheme: dark; --bg:#0a0b0e; --panel:#11141a; --fg:#e8ecf3; --muted:#8b93a7;
+          --line:#1e2430; --live:#3ddc97; --warn:#ffb454; --bad:#ff6b6b; --idle:#3a4251; }
   * { box-sizing: border-box }
   body { margin:0; background:var(--bg); color:var(--fg); min-height:100vh;
-         font:16px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Helvetica,sans-serif;
-         display:flex; align-items:center; justify-content:center; padding:24px }
-  main { width:100%; max-width:560px }
-  h1 { font-size:1.6rem; letter-spacing:-.02em; margin:0 0 6px }
-  .sub { color:var(--muted); margin:0 0 28px; font-size:14.5px }
-  button { width:100%; padding:18px; border-radius:12px; border:1px solid var(--line);
-           background:#12161e; color:var(--fg); font:inherit; cursor:pointer;
-           transition:border-color .2s ease, background .2s ease }
-  button:hover:not(:disabled) { border-color:var(--live) }
-  button:disabled { opacity:.5; cursor:default }
-  button.live { border-color:var(--live); background:rgba(61,220,151,.08) }
-  .state { display:flex; align-items:center; gap:9px; margin:20px 0 8px;
-           font:13px ui-monospace,Menlo,Consolas,monospace; color:var(--muted) }
-  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted) }
-  .dot.live { background:var(--live); animation:pulse 1.2s ease-in-out infinite }
-  .dot.warn { background:var(--warn) }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-  .log { margin-top:18px; border-top:1px solid var(--line); padding-top:18px }
-  .line { margin:0 0 14px }
-  .who { font:11px ui-monospace,monospace; letter-spacing:.1em; text-transform:uppercase;
-         color:var(--muted); display:block; margin-bottom:3px }
-  .err { color:var(--warn) }
-  .note { color:var(--muted); font-size:13px; margin-top:22px }
+         font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; padding:24px 20px 64px }
+  h1 { font-size:20px; margin:0 0 2px; letter-spacing:-0.01em }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 20px }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           padding:16px; margin-bottom:14px }
+  .row { display:flex; align-items:center; gap:12px; flex-wrap:wrap }
+  button { font:inherit; font-weight:600; color:#06210f; background:var(--live);
+           border:0; border-radius:8px; padding:11px 20px; cursor:pointer }
+  button.live { background:var(--warn) }
+  button:disabled { background:var(--idle); color:var(--muted); cursor:default }
+  button.ghost { background:transparent; color:var(--fg); border:1px solid var(--line) }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--idle); flex:none }
+  .dot.live { background:var(--live) } .dot.warn { background:var(--warn) }
+  .dot.bad { background:var(--bad) }
+  .state { font-variant-numeric:tabular-nums; color:var(--muted); font-size:13px }
+  .label { color:var(--muted); font-size:11px; text-transform:uppercase;
+           letter-spacing:.08em; margin-bottom:8px }
+
+  /* Input level, against the threshold the server actually uses. */
+  .meter { position:relative; height:26px; background:#0d1016; border:1px solid var(--line);
+           border-radius:6px; overflow:hidden }
+  .fill { position:absolute; inset:0 auto 0 0; width:0; background:var(--idle);
+          transition:width .05s linear }
+  .fill.over { background:var(--live) }
+  .thresh { position:absolute; top:0; bottom:0; width:2px; background:var(--warn) }
+  .meterfoot { display:flex; justify-content:space-between; color:var(--muted);
+               font-size:11px; margin-top:6px; font-variant-numeric:tabular-nums }
+
+  /* The pipeline, one box per stage. */
+  .stages { display:grid; grid-template-columns:repeat(5,1fr); gap:8px }
+  .stage { background:#0d1016; border:1px solid var(--line); border-radius:8px;
+           padding:10px 8px; text-align:center }
+  .stage.on { border-color:var(--live) }
+  .stage.done { border-color:#24463a }
+  .stage .n { font-size:12px; font-weight:600 }
+  .stage .t { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums;
+              margin-top:3px; min-height:16px }
+  .stage.on .n { color:var(--live) }
+
+  .nums { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px }
+  .num { background:#0d1016; border:1px solid var(--line); border-radius:8px; padding:12px }
+  .num .v { font-size:22px; font-weight:650; font-variant-numeric:tabular-nums }
+  .num .k { font-size:11px; color:var(--muted); margin-top:2px }
+  .num.good .v { color:var(--live) } .num.miss .v { color:var(--warn) }
+
+  #log { max-height:280px; overflow:auto }
+  .line { padding:7px 0; border-top:1px solid var(--line); font-size:14px }
+  .line:first-child { border-top:0 }
+  .who { display:inline-block; min-width:64px; color:var(--muted); font-size:11px;
+         text-transform:uppercase; letter-spacing:.06em }
+  .line.err { color:var(--bad) }
+  .line.sys { color:var(--muted); font-size:13px }
+  code { background:#0d1016; padding:1px 5px; border-radius:4px; font-size:12px }
+  .hint { color:var(--muted); font-size:12px; margin-top:10px }
 </style>
 </head>
 <body>
-<main>
+<div class="wrap">
   <h1>Vaani</h1>
-  <p class="sub">Ask about a government scheme in Hindi or Hinglish. Speak, then pause.</p>
+  <p class="sub">Hindi and Hinglish voice agent. Ask about a government scheme, out loud.</p>
 
-  <button id="talk">Start listening</button>
+  <div class="panel">
+    <div class="row">
+      <button id="talk">Start listening</button>
+      <button id="barge" class="ghost" disabled>Interrupt</button>
+      <span class="dot" id="dot"></span>
+      <span class="state" id="status">idle</span>
+    </div>
+    <p class="hint" id="hint">The backend sleeps when idle, so the first connection can take up to a minute.</p>
+  </div>
 
-  <div class="state"><span class="dot" id="dot"></span><span id="status">idle</span></div>
+  <div class="panel">
+    <div class="label">Microphone input</div>
+    <div class="meter"><div class="fill" id="fill"></div><div class="thresh" id="thresh"></div></div>
+    <div class="meterfoot">
+      <span id="level">level 0</span>
+      <span>orange mark = the level speech must clear (<span id="threshval">500</span>)</span>
+    </div>
+  </div>
 
-  <div class="log" id="log"></div>
+  <div class="panel">
+    <div class="label">Pipeline</div>
+    <div class="stages">
+      <div class="stage" id="s-vad"><div class="n">VAD</div><div class="t"></div></div>
+      <div class="stage" id="s-stt"><div class="n">STT</div><div class="t"></div></div>
+      <div class="stage" id="s-llm"><div class="n">LLM</div><div class="t"></div></div>
+      <div class="stage" id="s-tts"><div class="n">TTS</div><div class="t"></div></div>
+      <div class="stage" id="s-play"><div class="n">Playback</div><div class="t"></div></div>
+    </div>
+  </div>
 
-  <p class="note">
-    The backend sleeps when idle, so the first answer after a quiet period is slow.
-    That wait is a cold start and is excluded from the latency numbers rather than
-    hidden in them.
-  </p>
-</main>
+  <div class="panel">
+    <div class="label">This turn, measured in the browser</div>
+    <div class="nums">
+      <div class="num" id="n-first"><div class="v">&mdash;</div><div class="k">first audio, from end of speech</div></div>
+      <div class="num" id="n-answer"><div class="v">&mdash;</div><div class="k">first answer audio</div></div>
+      <div class="num" id="n-heard"><div class="v">&mdash;</div><div class="k">transcript back</div></div>
+      <div class="num" id="n-chunks"><div class="v">0</div><div class="k">audio chunks</div></div>
+    </div>
+    <p class="hint">Client-side timings, so they include the network. The published numbers come from
+    <code>bench/</code> against traces, not from here.</p>
+  </div>
 
-<script type="module">
-// The backend is a separate deploy, so the page cannot infer its address from
-// its own hostname. Named here rather than guessed, because a wrong guess fails
-// as a socket that never opens, which looks identical to a backend that is down.
+  <div class="panel">
+    <div class="label">Conversation</div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
 const BACKEND = "wss://vaani-g4jh.onrender.com/ws/voice";
-const SERVER = location.hostname === "localhost" || location.hostname === "127.0.0.1"
-  ? `ws://${location.hostname}:8000/ws/voice`
-  : (window.VAANI_WS || BACKEND);
+const HEALTH  = "https://vaani-g4jh.onrender.com/healthz";
+const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+// An explicit override wins over the local default, so the published page can be
+// pointed at a running backend for testing without editing it.
+const SERVER = window.VAANI_WS || (local ? `ws://${location.hostname}:8000/ws/voice` : BACKEND);
+const HEALTH_URL = window.VAANI_HEALTH || (local ? `http://${location.hostname}:8000/healthz` : HEALTH);
 
-const talk = document.getElementById("talk");
-const dot = document.getElementById("dot");
-const statusEl = document.getElementById("status");
-const log = document.getElementById("log");
+// The server's speech threshold, so the meter shows the same line the endpointer uses.
+// Provisional there and provisional here; it moves when the corpus sets it.
+const THRESHOLD = 500;
+const METER_MAX = 4000;
+
+const el = (id) => document.getElementById(id);
+const talk = el("talk"), barge = el("barge"), dot = el("dot"), statusEl = el("status");
+const log = el("log"), fill = el("fill"), levelEl = el("level"), hint = el("hint");
 
 let socket = null, context = null, node = null, stream = null;
 let generation = 0, listening = false;
+
+// Playback through MediaSource, appending each chunk to one buffer.
+//
+// The previous client wrapped every chunk in its own Blob and played it as a separate
+// Audio element. A 700 byte slice of an MP3 stream is not a playable file, so every
+// one of them failed to decode and the failure was swallowed by a catch. The server
+// was streaming audio correctly and the browser played silence.
+let audioEl = null, mediaSource = null, sourceBuffer = null, queue = [], ended = false;
+
+let t = {};   // turn timings
+let chunks = 0, sawAnswer = false;
 
 function setState(text, kind) {
   statusEl.textContent = text;
   dot.className = "dot" + (kind ? " " + kind : "");
 }
 
-function say(who, text, isError) {
+function say(who, text, cls) {
   const div = document.createElement("div");
-  div.className = "line" + (isError ? " err" : "");
-  div.innerHTML = `<span class="who"></span>`;
-  div.firstChild.textContent = who;
-  div.appendChild(document.createTextNode(text));
+  div.className = "line" + (cls ? " " + cls : "");
+  const tag = document.createElement("span");
+  tag.className = "who";
+  tag.textContent = who;
+  div.append(tag, document.createTextNode(text));
   log.prepend(div);
 }
 
+function stage(name, mode, note) {
+  const box = el("s-" + name);
+  if (!box) return;
+  box.className = "stage" + (mode ? " " + mode : "");
+  if (note !== undefined) box.querySelector(".t").textContent = note;
+}
+
+function resetStages() {
+  ["vad", "stt", "llm", "tts", "play"].forEach((s) => stage(s, "", ""));
+}
+
+function num(id, value, cls) {
+  const box = el(id);
+  box.querySelector(".v").textContent = value;
+  box.className = "num" + (cls ? " " + cls : "");
+}
+
+function since(mark) {
+  return mark ? Math.round(performance.now() - mark) : null;
+}
+
+function newTurn() {
+  t = { spoke: null, ended: null };
+  chunks = 0; sawAnswer = false;
+  resetStages();
+  num("n-first", "—"); num("n-answer", "—"); num("n-heard", "—"); num("n-chunks", "0");
+}
+
+/* ---------- playback ---------- */
+
+function openPlayback() {
+  audioEl = new Audio();
+  audioEl.autoplay = true;
+  mediaSource = new MediaSource();
+  audioEl.src = URL.createObjectURL(mediaSource);
+  queue = []; ended = false;
+
+  mediaSource.addEventListener("sourceopen", () => {
+    try {
+      sourceBuffer = mediaSource.addSourceBuffer("audio/mpeg");
+    } catch (err) {
+      say("system", "streaming playback unavailable, buffering instead", "sys");
+      sourceBuffer = null;
+      return;
+    }
+    sourceBuffer.addEventListener("updateend", pump);
+    pump();
+  });
+
+  // Started inside the click that opened the microphone, so autoplay policy is
+  // satisfied. Deferring it to the first chunk would need a second gesture.
+  audioEl.play().catch(() => setState("tap Start again to allow audio", "warn"));
+}
+
+function pump() {
+  if (!sourceBuffer || sourceBuffer.updating || !queue.length) return;
+  try { sourceBuffer.appendBuffer(queue.shift()); } catch (err) { /* buffer full or closed */ }
+}
+
+function playChunk(buffer) {
+  chunks += 1;
+  num("n-chunks", String(chunks));
+
+  if (t.ended && t.first === undefined) {
+    t.first = performance.now();
+    const ms = Math.round(t.first - t.ended);
+    num("n-first", ms + " ms", ms < 800 ? "good" : "miss");
+    stage("play", "on", ms + " ms");
+  }
+
+  if (sourceBuffer) { queue.push(buffer); pump(); return; }
+
+  // Fallback for browsers without MSE for mpeg: collect and play at the end. Loses
+  // the streaming latency, which is the whole point, so it says so.
+  queue.push(buffer);
+}
+
+function flushFallback() {
+  if (sourceBuffer || !queue.length) return;
+  const blob = new Blob(queue, { type: "audio/mpeg" });
+  queue = [];
+  new Audio(URL.createObjectURL(blob)).play().catch(() => {});
+}
+
+function closePlayback() {
+  flushFallback();
+  try { if (mediaSource && mediaSource.readyState === "open") mediaSource.endOfStream(); } catch (e) {}
+  ended = true;
+}
+
+/* ---------- session ---------- */
+
+async function warm() {
+  setState("waking the backend", "warn");
+  hint.textContent = "Render's free instance spins down when idle. This wait is a cold start.";
+  const started = performance.now();
+  try {
+    await fetch(HEALTH_URL, { cache: "no-store" });
+    const ms = Math.round(performance.now() - started);
+    say("system", `backend awake in ${ms} ms`, "sys");
+  } catch (err) {
+    say("system", "backend did not answer, trying the socket anyway", "sys");
+  }
+}
+
 async function start() {
-  // echoCancellation is what stops the agent hearing its own voice through the
-  // laptop speakers and interrupting itself. SPEC A1 says this is the riskiest
-  // assumption in the project, and M2 tests it on speakers rather than trusting
-  // the flag.
+  await warm();
+
   stream = await navigator.mediaDevices.getUserMedia({
+    // echoCancellation is what stops the agent hearing its own voice through the
+    // laptop speakers and interrupting itself. SPEC A1 says this is the riskiest
+    // assumption in the project.
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true,
              channelCount: 1 }
   });
@@ -96,75 +285,177 @@ async function start() {
   context = new AudioContext();
   await context.audioWorklet.addModule("capture-worklet.js");
 
+  setState("connecting", "warn");
   socket = new WebSocket(SERVER);
   socket.binaryType = "arraybuffer";
 
   socket.onopen = () => {
     generation += 1;
     socket.send("start");
+    newTurn();
+    openPlayback();
+
     node = new AudioWorkletNode(context, "capture");
     node.port.onmessage = (event) => {
-      if (socket.readyState !== WebSocket.OPEN) return;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
       const pcm = event.data;
-      // Two bytes of generation, then the samples. The server drops frames whose
-      // generation it has moved past, so audio already on the wire from an
-      // abandoned turn cannot be transcribed as part of the next one.
+      meter(pcm);
+
       const payload = new Uint8Array(2 + pcm.byteLength);
       new DataView(payload.buffer).setUint16(0, generation, true);
       payload.set(new Uint8Array(pcm.buffer), 2);
       socket.send(payload);
     };
     context.createMediaStreamSource(stream).connect(node);
+
     listening = true;
     talk.textContent = "Stop";
     talk.classList.add("live");
+    barge.disabled = false;
     setState("listening", "live");
+    hint.textContent = "Speak. The orange mark is the level your voice has to clear.";
   };
 
-  socket.onmessage = async (event) => {
-    if (event.data instanceof ArrayBuffer) {
-      await play(event.data);
-      return;
-    }
-    const message = JSON.parse(event.data);
-    if (message.type === "transcript") { say("you", message.text); setState("thinking", "warn"); }
-    else if (message.type === "reply") { say("vaani", message.text); }
-    else if (message.type === "audio_start") { setState("speaking", "live"); }
-    else if (message.type === "error") {
-      say("error", `${message.reason}${message.detail ? ": " + message.detail : ""}`, true);
-      setState("listening", "live");
-    }
+  socket.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) { playChunk(event.data); return; }
+    handle(JSON.parse(event.data));
   };
 
-  socket.onclose = () => stop();
-  socket.onerror = () => { say("error", "connection failed", true); stop(); };
+  socket.onclose = () => { if (listening) say("system", "socket closed", "sys"); stop(); };
+  socket.onerror = () => { say("error", "connection failed", "err"); stop(); };
 }
 
-async function play(buffer) {
-  const audio = new Audio(URL.createObjectURL(new Blob([buffer], { type: "audio/mpeg" })));
-  audio.onended = () => setState(listening ? "listening" : "idle", listening ? "live" : "");
-  await audio.play().catch(() => setState("tap to allow audio", "warn"));
+function handle(message) {
+  switch (message.type) {
+    case "ready":
+      stage("vad", "on", "waiting");
+      break;
+
+    case "transcript":
+      sawAnswer = true;
+      t.heard = performance.now();
+      if (t.ended) num("n-heard", Math.round(t.heard - t.ended) + " ms");
+      stage("vad", "done", "ended");
+      stage("stt", "done", t.ended ? Math.round(t.heard - t.ended) + " ms" : "");
+      stage("llm", "on", "generating");
+      say("you", message.text);
+      setState("thinking", "warn");
+      break;
+
+    case "reply":
+      stage("llm", "done", "");
+      stage("tts", "on", "synthesising");
+      say("vaani", message.text);
+      if (t.ended && t.answer === undefined) {
+        t.answer = performance.now();
+        num("n-answer", Math.round(t.answer - t.ended) + " ms");
+      }
+      break;
+
+    case "audio_start":
+      stage("tts", "done", "");
+      setState("speaking", "live");
+      break;
+
+    case "audio_end":
+      closePlayback();
+      stage("play", "done", "");
+      setState(listening ? "listening" : "idle", listening ? "live" : "");
+      if (!sawAnswer) {
+        say("system", "that was filler, the answer did not arrive", "sys");
+      }
+      newTurnSoon();
+      break;
+
+    case "error":
+      if (message.reason === "microphone") {
+        const muted = message.detail === "silent";
+        say("error", muted
+          ? "no audio at all: the microphone is muted, or permission was denied"
+          : "audio is arriving but too quiet: move closer or speak up", "err");
+        setState(muted ? "microphone muted" : "too quiet", "bad");
+      } else {
+        say("error", `${message.reason}${message.detail ? ": " + message.detail : ""}`, "err");
+        setState("listening", "live");
+      }
+      break;
+  }
 }
+
+let resetTimer = null;
+function newTurnSoon() {
+  clearTimeout(resetTimer);
+  // Long enough to read the numbers before the next turn clears them.
+  resetTimer = setTimeout(() => { if (listening) { newTurn(); stage("vad", "on", "waiting"); } }, 4000);
+}
+
+/* ---------- input level ---------- */
+
+let quietFrames = 0;
+function meter(pcm) {
+  const samples = new Int16Array(pcm.buffer ? pcm.buffer : pcm);
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  const rms = Math.sqrt(sum / samples.length);
+
+  const pct = Math.min(100, (rms / METER_MAX) * 100);
+  fill.style.width = pct + "%";
+  fill.className = "fill" + (rms >= THRESHOLD ? " over" : "");
+  levelEl.textContent = "level " + Math.round(rms);
+
+  // The client's own view of when speech stopped, which is what its timings are
+  // measured from. The server decides the real endpoint; this only has to be close
+  // enough to make the numbers on screen mean something.
+  if (rms >= THRESHOLD) {
+    quietFrames = 0;
+    if (!t.spoke) { t.spoke = performance.now(); stage("vad", "on", "speech"); }
+    t.ended = null;
+  } else if (t.spoke) {
+    quietFrames += 1;
+    if (quietFrames === 10 && !t.ended) {          // ~200ms of quiet
+      t.ended = performance.now();
+      stage("vad", "on", "ending");
+      stage("stt", "on", "transcribing");
+    }
+  }
+}
+
+/* ---------- controls ---------- */
 
 function stop() {
   listening = false;
   if (node) node.disconnect();
-  if (stream) stream.getTracks().forEach((t) => t.stop());
+  if (stream) stream.getTracks().forEach((track) => track.stop());
   if (context) context.close();
   if (socket && socket.readyState === WebSocket.OPEN) { socket.send("stop"); socket.close(); }
   socket = node = context = stream = null;
+  closePlayback();
   talk.textContent = "Start listening";
   talk.classList.remove("live");
+  barge.disabled = true;
+  resetStages();
   setState("idle");
+  hint.textContent = "The backend sleeps when idle, so the first connection can take up to a minute.";
 }
 
 talk.onclick = async () => {
   if (listening) { stop(); return; }
   talk.disabled = true;
-  setState("connecting");
   try { await start(); }
-  catch (err) { say("error", err.message, true); setState("idle"); }
+  catch (err) { say("error", err.message, "err"); setState("idle", "bad"); stop(); }
   finally { talk.disabled = false; }
+};
+
+barge.onclick = () => {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  generation += 1;
+  socket.send("interrupt");
+  say("system", "interrupted", "sys");
+  if (audioEl) audioEl.pause();
+  closePlayback();
+  openPlayback();
+  newTurn();
+  setState("listening", "live");
 };
 </script>
 </body>
