@@ -1,7 +1,14 @@
 # Prior art, and what Vaani takes from it
 
-Read against the TrueState voice-agent blueprint (July 2026), LiveKit Agents, Pipecat,
-TEN Framework, Bolna, Vocode, Dograh, and the turn-taking literature.
+Read against the TrueState voice-agent blueprint (July 2026) in full, the READMEs of TEN
+Framework and Dograh, and what the blueprint reports about LiveKit Agents, Pipecat, Bolna
+and Vocode.
+
+**What this document is not based on.** No research papers were read. No source was read for
+Bolna, Vocode, LiveKit or Pipecat: their mechanisms here are secondhand, from the blueprint's
+comparison tables. An earlier version of this line claimed "the turn-taking literature", which
+was not earned and is corrected here. Where a claim below rests on secondhand reporting rather
+than something read directly, treat it as a lead to verify rather than a finding.
 
 One thing first, because it decides everything below. **Vaani is not competing with these
 systems and should not try.** LiveKit and Pipecat are transport and orchestration
