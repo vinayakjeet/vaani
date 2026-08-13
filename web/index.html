@@ -134,6 +134,7 @@ const THRESHOLD = 500;
 const METER_MAX = 4000;
 
 const el = (id) => document.getElementById(id);
+
 const talk = el("talk"), barge = el("barge"), dot = el("dot"), statusEl = el("status");
 const log = el("log"), fill = el("fill"), levelEl = el("level"), hint = el("hint");
 
@@ -147,6 +148,11 @@ let generation = 0, listening = false;
 // one of them failed to decode and the failure was swallowed by a catch. The server
 // was streaming audio correctly and the browser played silence.
 let audioEl = null, mediaSource = null, sourceBuffer = null, queue = [], ended = false;
+
+// The marker sits where the server's threshold falls on this scale, so the two
+// cannot drift apart in the reader's head.
+document.getElementById("thresh").style.left = (THRESHOLD / METER_MAX) * 100 + "%";
+document.getElementById("threshval").textContent = String(THRESHOLD);
 
 let t = {};   // turn timings
 let chunks = 0, sawAnswer = false;
