@@ -189,3 +189,120 @@ Not on infrastructure. On evidence.
 - Does our provider support prompt caching, and what does it do to time to first token?
 - What fraction of real Hinglish barge-ins are backchannels rather than interruptions? The
   answer sets the lexicon and the duration gate, and it needs the recorded corpus.
+
+
+## Second pass, 2026-08-13: primary sources
+
+The first pass rested on one document. This pass read Bolna's source directly and searched
+the 2026 literature. Two of my earlier recommendations were wrong and are corrected below.
+
+### Read directly
+
+`bolna/agent_manager/interruption_manager.py` (512 lines), `bolna/helpers/mark_event_meta_data.py`,
+`bolna/constants.py`. Pipecat and LiveKit source still not read; their READMEs do not describe
+internals.
+
+### Correction 1: do not enumerate backchannels, enumerate stop words
+
+I told you to build a backchannel lexicon so "haan" does not interrupt. Bolna does the
+opposite and it is better.
+
+`should_trigger_interruption` interrupts when `word_count > number_of_words_for_interruption`
+(default **3**) **or** the transcript matches `ACCIDENTAL_INTERRUPTION_PHRASES`, which is not
+a backchannel list at all: it is "stop", "wait", "no", "hold on", "enough", "excuse me",
+"not now", "stop speaking". Short *stop* words that must interrupt despite being short.
+And `is_false_interruption` discards a final transcript that is short and not on that list.
+
+The insight is that backchannels are an open set and stop words are a closed one. Enumerating
+"haan, achha, hmm, theek hai, accha ji, ji, hm" is a losing game in Hinglish; enumerating the
+handful of short phrases that mean stop is tractable. Word count carries the rest.
+
+### Correction 2: a three-state audio gate, not two
+
+We have SEND or BLOCK by generation. Bolna has **SEND, BLOCK, WAIT**:
+
+- BLOCK when the sequence id is not in the valid set, which is our generation check.
+- **WAIT while the user is speaking**, holding audio rather than discarding it.
+- **WAIT during a grace period** after the user's utterance ends, `incremental_delay` default
+  **900ms**, and only after the first two turns so the greeting is not delayed.
+
+WAIT is the state we lack, and it is what stops the agent talking over someone who has
+started again. Also worth stealing: `sequence_ids` is a **set** with -1 reserved for
+background audio, so several streams can be valid at once. Our single integer cannot express
+that.
+
+### The playout problem, solved concretely
+
+`mark_event_meta_data.py` answers the question our `vaani.playback.queued_ms` currently
+fudges. Their comment is the lesson: audio is handed over faster than real time, so a chunk
+starts playing when the previously queued audio ends, not when it was sent. Hence
+
+    audio_playing_until = max(audio_playing_until, now) + duration
+
+That gives a playout estimate with no client acknowledgement at all, which we could adopt
+today. On top of it they track `record_heard_text` per turn, accumulating the text of chunks
+the far end acknowledged, so `get_heard_text_for_turn()` is literally what the user heard.
+That is the truncation input the blueprint said everybody botches, and it is about forty lines.
+
+### Metrics worth copying outright
+
+- `tts_speed_ratio = total_audio_duration / wall_clock`. Below 1 means synthesis cannot keep
+  up with playback and the answer will stutter. One division, and it catches a failure our
+  latency numbers cannot see.
+- `high_delay_count`, chunks whose acknowledgement exceeded `HIGH_DELAY_THRESHOLD = 2.0`.
+- `total_missed`, marks sent but never acknowledged.
+- **`longest_agent_monologue_ms`** and a talk-to-listen ratio. Not latency at all, and closer
+  to whether a conversation felt human than anything in our current budget.
+- `cleared_on_interrupt` per chunk, so an interrupted turn can be reconstructed afterwards.
+
+### Speculative prefill, as actually built
+
+Bolna wires Deepgram Flux with three constants: `EOT_THRESHOLD = 0.7` to declare end of turn,
+`EAGER_EOT_THRESHOLD = 0.5` to **fire the LLM early**, and `EOT_TIMEOUT_MS = 500` as the
+forcing timeout. There is an `eager_llm_task` that is cancelled when the guess turns out
+wrong. That is SPEC's speculative prefill technique with a working shape: two thresholds on
+one confidence signal, and a cancellable task.
+
+Our recogniser emits no such confidence, which is the real blocker for that technique, not the
+prefill logic.
+
+### 2026 literature
+
+Searched and read. All are 2026 unless noted.
+
+**X2-Turn** (arXiv 2608.10878), the closest thing to what we should want. One model, two heads
+on shared hidden states: streaming ASR tokens and turn state in a single forward pass at
+**80ms frames**. Five states: idle, noidle, incomplete, complete, **backchannel**. At
+tau = 480ms it reports **91.0% complete accuracy at 288ms latency** for Chinese and 92.1% at
+225ms for English, beating SoulX-Duplug's 77.67%. Turn predictions deliberately do not feed
+back into ASR decoding, so a turn error cannot corrupt the transcript. Reimplementing it needs
+26k hours of ASR plus forced alignment and LLM-labelled word-level states, so it is a
+reference architecture rather than something we build.
+
+**smart-turn** (pipecat-ai, BSD-2). This one we can actually use: Whisper-tiny backbone,
+**8M parameters, 8MB quantised int8, 10ms to 100ms on CPU**, input is **16kHz mono PCM up to
+8 seconds**, which is exactly the format our worklet already produces. It changes the
+model-download question completely: 8MB is not the 60MB Piper problem.
+
+**RelayS2S** (arXiv 2603.23346): dual-path speculative generation reports **P90 onset latency
+of 81ms against 1091ms for a cascaded baseline**, keeping 99% of the cascade's quality score.
+Worth knowing as the honest ceiling on what a cascade can reach.
+
+**SoulX-Duplug** (arXiv 2603.14877): a plug-and-play streaming state predictor folding VAD,
+ASR and turn detection into one module, because non-streaming turn detection adds latency that
+grows with input length.
+
+**Speculative End-Turn Detector** (arXiv 2503.23439, 2025) and **Discourse-Aware Dual-Track
+Streaming Response** (arXiv 2602.23266) round out the direction: turn state is being predicted
+jointly with recognition rather than bolted on after silence.
+
+**Gradium's product note** describes emitting turn-completion predictions every 80ms as
+inactivity probabilities at 0.5, 1, 2 and 3 second horizons. A forecast rather than a verdict,
+which is a more useful shape than our boolean.
+
+### What this changes about our plan
+
+The direction of the whole field is that **VAD plus a silence timer is the thing being
+replaced**, and our `completeness.py` word-order rule is a hand-written approximation of a
+model that now exists at 8MB. The rule is still worth keeping as the ablation's baseline arm,
+which is exactly what SPEC wants, but it should not be the only arm.
