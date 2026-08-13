@@ -33,8 +33,8 @@ from vaani.protocol import (
     decode,
 )
 from vaani.session import Incoming, VoiceSession
-from vaani.stt import ChunkedStt, GroqWhisper
-from vaani.tts import VOICE_EN_IN, VOICE_HI, EdgeTts
+from vaani.stt import ChunkedStt, GroqWhisper, RecoveringStt
+from vaani.tts import VOICE_HI, EdgeTts, FailingOverTts
 
 logger = structlog.get_logger(__name__)
 
@@ -98,10 +98,17 @@ def build_answer() -> Callable[[AsyncIterator[bytes], Callable[[], bool]], Async
     Built per session rather than per process so a turn's state cannot leak into
     the next visitor's, and so the endpointer belongs to one conversation.
     """
+    transcriber = GroqWhisper()
     pipeline = StreamingPipeline(
-        stt=ChunkedStt(GroqWhisper()),
+        # The batch path behind the chunked one. A dropped stream is retried through
+        # the endpoint that takes a whole file, which is slower and works, and it is
+        # the other mechanism rather than a retry of the one that just failed.
+        stt=RecoveringStt(ChunkedStt(transcriber), transcriber),
         turn=StreamedTurn(llm=ChatClient()),
-        tts=EdgeTts(),
+        # A second voice behind the first. The primary is unofficial with no uptime
+        # promise, so this path runs whenever it breaks rather than only on the day
+        # somebody remembers to test it.
+        tts=FailingOverTts(EdgeTts(), EdgeTts()),
     )
     return pipeline.run
 
@@ -141,4 +148,4 @@ async def voice(socket: WebSocket) -> None:
             logger.info("voice.disconnected")
 
 
-__all__ = ["router", "ClientMessage", "VOICE_EN_IN"]
+__all__ = ["router", "ClientMessage"]

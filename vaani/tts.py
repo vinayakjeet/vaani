@@ -10,7 +10,9 @@ exercised until the day it was needed.
 from __future__ import annotations
 
 import time
+from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable
+from enum import StrEnum
 from typing import Protocol
 
 import structlog
@@ -127,3 +129,103 @@ class EdgeTts:
         if chunks == 0:
             raise TtsError("no audio produced")
         logger.info("tts.done", provider=self.name, voice=voice, chunks=chunks)
+
+
+# Why a sentence had to be spoken by the fallback. A closed set, for the same reason
+# the recogniser's reasons are: a metric label built from an exception message grows
+# without bound.
+class FailoverReason(StrEnum):
+    BEFORE_AUDIO = "before_audio"
+    MID_SENTENCE = "mid_sentence"
+
+
+failovers: Counter[str] = Counter()
+
+
+class FailingOverTts:
+    """A synthesiser with a second voice behind it. SPEC S7.
+
+    The primary here is an unofficial service with no uptime promise, which is why
+    M3.3 exists at all: it is the provider most likely to fail partway through a
+    reply, so the fallback path is not a hypothetical.
+
+    Failover is sticky. Once the primary has failed, the remaining sentences go
+    straight to the fallback rather than each paying a failed attempt first, which is
+    what SPEC S7 means by the remaining sentences being synthesised by the fallback.
+
+    Two shapes of failure, and they get different treatment because the listener has
+    already heard different amounts:
+
+    - Nothing was emitted for this sentence yet, so the fallback speaks it and there
+      is no artefact at all.
+    - Some of the sentence was already spoken. It cannot be un-said, so the fallback
+      speaks the whole sentence again. A listener hears part of a clause repeated,
+      which is jarring and complete, where continuing from the next sentence would
+      drop the rest of this one. For an eligibility answer a missing clause changes
+      the answer and a repeated clause does not, so the repeat is the lesser harm.
+      The ablation reports the rate rather than the choice.
+
+    Previous sentences are never resynthesised. That is the difference between
+    continuing and restarting the answer.
+    """
+
+    def __init__(
+        self,
+        primary: TtsProvider,
+        fallback: TtsProvider,
+        fallback_voice: str = VOICE_EN_IN,
+    ) -> None:
+        if primary.mime != fallback.mime:
+            # The browser is handed one stream of audio built from both providers, so
+            # a codec change partway through is a stream it cannot decode. Better a
+            # refusal at construction than a demo that plays half an answer.
+            raise TtsError(
+                f"fallback speaks {fallback.mime} and the primary speaks {primary.mime}; "
+                "playback cannot switch codecs mid-answer"
+            )
+
+        self._primary = primary
+        self._fallback = fallback
+        self._fallback_voice = fallback_voice
+        self._failed_over = False
+        self.name = f"{primary.name}+{fallback.name}"
+        self.mime = primary.mime
+
+    @property
+    def failed_over(self) -> bool:
+        return self._failed_over
+
+    async def synthesize(
+        self, text: str, voice: str = VOICE_HI, index: int = 0
+    ) -> AsyncIterator[bytes]:
+        if self._failed_over:
+            async for chunk in self._fallback.synthesize(text, self._fallback_voice, index):
+                yield chunk
+            return
+
+        spoken = 0
+        try:
+            async for chunk in self._primary.synthesize(text, voice, index):
+                spoken += 1
+                yield chunk
+            return
+        except TtsError:
+            reason = (
+                FailoverReason.MID_SENTENCE if spoken else FailoverReason.BEFORE_AUDIO
+            )
+            self._failed_over = True
+            failovers[reason] += 1
+            # The reason and the sentence number, never the sentence. The voice change
+            # is visible in the trace as a second `tts.synthesize` span with a
+            # different `vaani.tts.voice`, and the failed attempt keeps its own span
+            # carrying `error.type`.
+            logger.warning(
+                "tts.failed_over",
+                primary=self._primary.name,
+                fallback=self._fallback.name,
+                reason=str(reason),
+                sentence_index=index,
+            )
+
+        async for chunk in self._fallback.synthesize(text, self._fallback_voice, index):
+            yield chunk
