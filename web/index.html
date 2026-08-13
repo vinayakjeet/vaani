@@ -104,9 +104,9 @@
   <div class="panel">
     <div class="label">This turn, measured in the browser</div>
     <div class="nums">
-      <div class="num" id="n-first"><div class="v">&mdash;</div><div class="k">first audio, from end of speech</div></div>
-      <div class="num" id="n-answer"><div class="v">&mdash;</div><div class="k">first answer audio</div></div>
-      <div class="num" id="n-heard"><div class="v">&mdash;</div><div class="k">transcript back</div></div>
+      <div class="num" id="n-first"><div class="v">-</div><div class="k">first audio, from end of speech</div></div>
+      <div class="num" id="n-answer"><div class="v">-</div><div class="k">first answer audio</div></div>
+      <div class="num" id="n-heard"><div class="v">-</div><div class="k">transcript back</div></div>
       <div class="num" id="n-chunks"><div class="v">0</div><div class="k">audio chunks</div></div>
     </div>
     <p class="hint">Client-side timings, so they include the network. The published numbers come from
@@ -197,7 +197,7 @@ function newTurn() {
   t = { spoke: null, ended: null };
   chunks = 0; sawAnswer = false;
   resetStages();
-  num("n-first", "—"); num("n-answer", "—"); num("n-heard", "—"); num("n-chunks", "0");
+  num("n-first", "-"); num("n-answer", "-"); num("n-heard", "-"); num("n-chunks", "0");
 }
 
 /* ---------- playback ---------- */
