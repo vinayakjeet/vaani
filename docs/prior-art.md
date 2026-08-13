@@ -425,3 +425,67 @@ narrow, and M4.10 is the beginning of a fix.
 a thing that must not interrupt us. RESPOND treats the agent emitting a timely acknowledgement as
 a measurable gain in perceived naturalness. That inverts the item and is cheap for us: the filler
 bank already exists.
+
+
+## Fourth pass: `sync_history`, read line by line
+
+125 lines of `task_manager.py` read directly. This is how Bolna reconciles the conversation
+record after an interruption, and it is the most carefully-guarded code in the repo. Five
+things in it that we would each have got wrong.
+
+### 1. Evidence versus blind fallback, and refusing to trim on the latter
+
+They resolve which turn to trim through a chain, then keep a separate flag,
+`target_from_evidence`, recording whether the answer came from **actual evidence** (pending
+marks, or acknowledged text) or from a **blind fallback** to "the latest assistant turn".
+
+If it came from the fallback, they **refuse to trim at all**. Their comment says why: a second
+cleanup after a previous one already committed a filler would otherwise delete that filler from
+history. So the guard is not about correctness of the trim, it is about idempotence of repeated
+cleanups.
+
+We have no equivalent because we have no conversation record yet. The moment we add one, this
+is the bug we would ship: a second interruption with nothing pending silently deletes the last
+committed message.
+
+### 2. A four-level fallback for "what was heard", ordered by trust
+
+In order: acknowledged text for this response id, then for this turn id, then the mark store's
+text for the response, then for the turn, and only then a global accumulator.
+
+The global is used **only when the target turn is unknown**, and the comment explains the
+trap: with a known target turn, the global can hold stale text from a previous turn, for
+instance acked post-tool audio, and using it would corrupt the wrong message. A fallback chain
+that gets less specific as it descends must stop before it becomes wrong rather than merely
+vague.
+
+### 3. Duration-proportional reconstruction when nothing was acknowledged
+
+If no acknowledged text exists at all, they estimate what was played from timing:
+
+- `actual_play_time = interruption_timestamp - first_chunk_sent_ts`
+- walk the pending chunks accumulating their durations
+- chunks entirely inside that window count as played in full
+- for the chunk **straddling** the boundary, take `proportion = remaining_time / chunk_duration`,
+  slice that fraction of the characters, and then **trim to complete words**
+
+Characters proportional to time is a crude model of speech and it is obviously better than the
+two alternatives, which are dropping the straddling chunk entirely or keeping all of it. This
+is the mechanism we would need if we never add client acknowledgements at all, and it makes
+M2.7 implementable without any client change.
+
+### 4. Streaming synthesisers do not populate the text, so there is a second path
+
+Marks from a streaming synthesiser carry audio duration but no `text_synthesized`, so the whole
+text-based reconstruction is unavailable. They group pending marks by turn id and work from
+duration alone. Two code paths for the same question because the providers differ, which is
+exactly the seam our `SttProvider`/`TtsProvider` interfaces are meant to hide and cannot here.
+
+### 5. Backchannel audio is excluded from the played-text reconstruction
+
+`mark_type in ["pre_mark_message", "backchanneling"]` is skipped. An acknowledgement the agent
+emitted is audio the user heard, but it is **not part of the reply**, so counting it would put
+"haan" into the assistant's turn and shift every subsequent character offset.
+
+This lands directly on M2.12: the moment we emit backchannels, they must be marked as a
+different kind of audio or they will corrupt the transcript we are trying to protect.
