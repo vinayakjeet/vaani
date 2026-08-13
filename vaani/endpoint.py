@@ -15,6 +15,7 @@ from __future__ import annotations
 import array
 import math
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from vaani.completeness import looks_complete
 from vaani.protocol import FRAME_MS
@@ -68,6 +69,24 @@ DEFAULT_AGGRESSIVENESS = 2
 # false-endpoint rate rather than tuned quietly.
 DEFAULT_EARLY_SILENCE_MS = 200
 
+# How long a microphone may produce nothing before the user is told. Longer than
+# somebody taking a moment to think, short enough that a muted microphone is
+# diagnosed rather than experienced as a dead demo. Provisional like every other
+# threshold here, and it trades a false complaint against a silent wait.
+DEFAULT_SILENCE_TIMEOUT_MS = 5000
+
+# Below this an input is not quiet, it is off. Full scale for PCM16 is 32767, so a
+# reading under one sample of amplitude is digital zero plus dither rather than a
+# room. The distinction matters because the two have different answers: a muted
+# microphone needs unmuting, and a quiet one needs the speaker to move closer.
+SILENT_RMS = 1.0
+
+
+class MicState(StrEnum):
+    OK = "ok"
+    SILENT = "silent"
+    TOO_QUIET = "too_quiet"
+
 
 def rms(pcm: bytes) -> float:
     """Root mean square of one frame of little-endian PCM16."""
@@ -94,8 +113,14 @@ class Endpointer:
     # leaving the reader to infer it from two numbers.
     aggressiveness: int | None = None
 
+    silence_timeout_ms: int = DEFAULT_SILENCE_TIMEOUT_MS
+
     speech_ms: int = field(default=0, init=False)
     silence_ms: int = field(default=0, init=False)
+    # Everything heard before this turn started, so a microphone that is producing
+    # nothing can be told apart from one producing something too quiet to use.
+    waiting_ms: int = field(default=0, init=False)
+    peak_rms: float = field(default=0.0, init=False)
     _started: bool = field(default=False, init=False)
     _resume_ms: int = field(default=0, init=False)
     _partial_complete: bool = field(default=False, init=False)
@@ -142,13 +167,39 @@ class Endpointer:
         """Whether enough speech has arrived to call this a turn."""
         return self._started
 
+    def diagnose(self) -> MicState:
+        """Whether the microphone is working, judged only while waiting for speech.
+
+        SPEC S6. An endpoint that will never arrive is not a state to wait in: a
+        muted microphone produces frames forever and the old behaviour discarded all
+        of them silently, so the demo looked dead rather than saying what was wrong.
+
+        Two different failures with two different answers. Digital silence means the
+        input is off, muted at the operating system or never permitted. Audible but
+        below the threshold means the microphone works and the speaker is too far
+        away or too quiet. Reporting one as the other sends somebody to the wrong
+        setting.
+        """
+        if self._started or self.waiting_ms < self.silence_timeout_ms:
+            return MicState.OK
+        return MicState.SILENT if self.peak_rms < SILENT_RMS else MicState.TOO_QUIET
+
     def accept(self, pcm: bytes) -> bool:
         """Feed one frame. Returns True when the turn has ended.
 
         Silence before speech is discarded rather than counted, so a user who
         takes three seconds to begin does not end the turn before starting it.
         """
-        if rms(pcm) >= self.threshold_rms:
+        level = rms(pcm)
+        # Accumulated unconditionally. Guarding this on "not yet started" was
+        # redundant: `diagnose` already returns OK once a turn is under way, so the
+        # guard changed no behaviour and deleting it changed no test. What protects a
+        # mid-turn pause from being read as a fault is that check, not this one, and
+        # `test_a_pause_mid_turn_is_not_a_microphone_fault` is where that is pinned.
+        self.waiting_ms += FRAME_MS
+        self.peak_rms = max(self.peak_rms, level)
+
+        if level >= self.threshold_rms:
             self.speech_ms += FRAME_MS
             self._resume_ms += FRAME_MS
             if self.speech_ms >= self.min_speech_ms:
@@ -173,3 +224,5 @@ class Endpointer:
         self._started = False
         self._resume_ms = 0
         self._partial_complete = False
+        self.waiting_ms = 0
+        self.peak_rms = 0.0

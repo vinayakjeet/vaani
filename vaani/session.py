@@ -28,7 +28,7 @@ import structlog
 
 from vaani.barge_in import AudioChunk, SpeakingTurn
 from vaani.budget import TurnClock, speak_within
-from vaani.endpoint import Endpointer
+from vaani.endpoint import Endpointer, MicState
 from vaani.protocol import ClientMessage, Frame, ServerMessage
 from vaani.state import State, TurnState
 from vaani.tts import AUDIO_MIME
@@ -96,6 +96,9 @@ class VoiceSession:
         # to open a playback buffer, so sending it twice for one turn splices the
         # answer and sending it never leaves the audio unplayed.
         self._announced: int | None = None
+        # Which microphone complaint has already been made this turn, so it is said
+        # once rather than fifty times a second.
+        self._microphone_reported: MicState | None = None
         self.clock: TurnClock | None = None
 
     async def run(self) -> None:
@@ -163,10 +166,35 @@ class VoiceSession:
         if self._endpointer.accept(frame.pcm):
             await self._frames.put(None)
             await self._begin_answering()
+            return
+
+        await self._check_microphone()
+
+    async def _check_microphone(self) -> None:
+        """Say so when no speech is arriving, rather than waiting for an endpoint.
+
+        Reported once per turn. Repeating it every 20ms would bury the message under
+        itself, and the session keeps listening afterwards because the usual fix is
+        the user unmuting and speaking again.
+        """
+        state = self._endpointer.diagnose()
+        if state is MicState.OK or state is self._microphone_reported:
+            return
+
+        self._microphone_reported = state
+        logger.info("session.microphone", state=str(state))
+        await self._say(
+            {
+                "type": ServerMessage.ERROR,
+                "reason": "microphone",
+                "detail": str(state),
+            }
+        )
 
     def _begin_listening(self) -> None:
         self._state.begin()
         self._endpointer.reset()
+        self._microphone_reported = None
         self._frames = asyncio.Queue()
 
     async def _begin_answering(self) -> None:
