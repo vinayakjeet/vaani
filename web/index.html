@@ -278,6 +278,21 @@ async function warm() {
 }
 
 async function start() {
+  // Everything that needs the user's click happens before the first await.
+  //
+  // A fresh AudioContext starts suspended under autoplay policy, and `audioEl.play()`
+  // needs a gesture too. The previous version awaited a health check first, which on a
+  // cold Render instance can take fifty seconds, so by the time the graph was built the
+  // gesture was long gone: the context stayed suspended, the worklet never ran, no
+  // frames were ever sent, and the page sat there looking fine with the meter at zero.
+  context = new AudioContext();
+  if (context.state !== "running") await context.resume();
+  if (context.state !== "running") {
+    throw new Error("browser blocked audio, click Start again");
+  }
+  await context.audioWorklet.addModule("capture-worklet.js");
+  openPlayback();
+
   await warm();
 
   stream = await navigator.mediaDevices.getUserMedia({
@@ -288,9 +303,6 @@ async function start() {
              channelCount: 1 }
   });
 
-  context = new AudioContext();
-  await context.audioWorklet.addModule("capture-worklet.js");
-
   setState("connecting", "warn");
   socket = new WebSocket(SERVER);
   socket.binaryType = "arraybuffer";
@@ -299,7 +311,6 @@ async function start() {
     generation += 1;
     socket.send("start");
     newTurn();
-    openPlayback();
 
     node = new AudioWorkletNode(context, "capture");
     node.port.onmessage = (event) => {
@@ -320,6 +331,8 @@ async function start() {
     barge.disabled = false;
     setState("listening", "live");
     hint.textContent = "Speak. The orange mark is the level your voice has to clear.";
+    framesSent = 0;
+    watchFrames();
   };
 
   socket.onmessage = (event) => {
@@ -397,8 +410,21 @@ function newTurnSoon() {
 
 /* ---------- input level ---------- */
 
+let framesSent = 0, watchdog = null;
+
+function watchFrames() {
+  clearTimeout(watchdog);
+  watchdog = setTimeout(() => {
+    if (listening && framesSent === 0) {
+      say("error", "no audio frames are leaving the browser: the audio graph is not running", "err");
+      setState("audio blocked", "bad");
+    }
+  }, 1500);
+}
+
 let quietFrames = 0;
 function meter(pcm) {
+  framesSent += 1;
   const samples = new Int16Array(pcm.buffer ? pcm.buffer : pcm);
   let sum = 0;
   for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
@@ -430,6 +456,7 @@ function meter(pcm) {
 
 function stop() {
   listening = false;
+  clearTimeout(watchdog);
   if (node) node.disconnect();
   if (stream) stream.getTracks().forEach((track) => track.stop());
   if (context) context.close();
