@@ -35,12 +35,17 @@ from vaani.protocol import ClientMessage, Frame, ServerMessage
 from vaani.state import State, TurnState
 from vaani.stt import SttError
 from vaani.tts import AUDIO_MIME, TtsError
+from vaani.turn_taking import AudioStatus, TurnTaking
 
 logger = structlog.get_logger(__name__)
 
 # Exceptions whose messages this project writes itself, so they name a reason rather
 # than echoing a provider. Anything else is logged by class only.
 SAFE_TO_LOG = (ProviderError, SttError, TtsError)
+
+# The longest a chunk may be held while the user speaks. Beyond this the hold is assumed to be
+# a stuck flag rather than a talkative user, and the audio goes out late instead of never.
+MAX_HOLD_S = 3.0
 
 
 @dataclass(frozen=True)
@@ -106,6 +111,10 @@ class VoiceSession:
         # Which microphone complaint has already been made this turn, so it is said
         # once rather than fifty times a second.
         self._microphone_reported: MicState | None = None
+        # The turn-taking decisions read from Bolna: the three-state gate and the playout
+        # estimate. Interruption by word count still needs a partial transcript here, which
+        # the pipeline owns, so that half is not wired yet.
+        self._turns = TurnTaking()
         self.clock: TurnClock | None = None
 
     async def run(self) -> None:
@@ -145,7 +154,14 @@ class VoiceSession:
             # trusted to have been stopped in time.
             return
 
+        self._turns.note_user_speaking() if self._endpointer.started else None
+
         if self._state.state is State.SPEAKING:
+            # Held audio needs to know the user has started, which is what turns the gate to
+            # WAIT rather than letting the agent speak over them.
+            if self._endpointer.started:
+                self._turns.note_user_speaking()
+
             # Speech while the agent is talking is a barge-in without the client
             # having to say so. A client that sends INTERRUPT gets there sooner; one
             # that does not still gets interrupted.
@@ -221,6 +237,7 @@ class VoiceSession:
         # zeroed it, so the backdating was always nothing and the flattering clock
         # shipped behind a comment saying it had not. Where you start the measurement
         # is the measurement, and so is when you read it.
+        self._turns.note_user_stopped()
         spent_waiting = self._endpointer.silence_ms * 1_000_000
         self.clock = TurnClock(started_ns=time.monotonic_ns() - spent_waiting)
 
@@ -301,6 +318,7 @@ class VoiceSession:
         # Bumping the generation first also makes every chunk already dequeued stale
         # immediately, so the transport drops it without depending on how quickly the
         # producer stops.
+        self._turns.drop_playout()
         self._begin_listening()
         await self._stop_speaking()
         await self._say({"type": ServerMessage.READY})
@@ -316,6 +334,30 @@ class VoiceSession:
             self._playback = None
 
     async def _send_audio(self, chunk: AudioChunk) -> None:
+        # Three states, not two. BLOCK is stale audio, WAIT is audio that is still the right
+        # answer at the wrong moment: the user has started talking, so hold it rather than
+        # speaking over them or throwing it away. Read from Bolna's `get_audio_send_status`.
+        status = self._turns.status(chunk.generation, live={self._state.generation})
+        if status is AudioStatus.WAIT:
+            # Held until they stop, and bounded, because an unbounded poll on a flag is how a
+            # turn hangs in silence. A flag left set by a path nobody thought about should cost
+            # a late answer, not the whole turn: this exact loop spun forever the first time,
+            # because nothing cleared `user_speaking` when the endpoint fired.
+            deadline = time.monotonic() + MAX_HOLD_S
+            while (
+                self._turns.status(chunk.generation, live={self._state.generation})
+                is AudioStatus.WAIT
+                and time.monotonic() < deadline
+            ):
+                await asyncio.sleep(0.02)
+            status = self._turns.status(chunk.generation, live={self._state.generation})
+            if status is AudioStatus.WAIT:
+                logger.warning("session.hold_expired", generation=chunk.generation)
+                status = AudioStatus.SEND
+
+        if status is AudioStatus.BLOCK:
+            return
+
         if not self._state.owns(chunk.generation):
             # Produced before the interruption and dequeued after it. Stopping the
             # producer does not unsend what it already handed on, so the last chance
@@ -331,6 +373,11 @@ class VoiceSession:
                     "generation": chunk.generation,
                 }
             )
+
+        # Playout advances by the audio's own duration, not by how long the send took, because
+        # a chunk starts playing when the previous one ends. An MP3 frame at this bitrate is
+        # roughly 24ms; the estimate only has to be close enough to bound the wait.
+        self._turns.note_audio_queued(len(chunk.data) / 30000)
 
         async with self._send:
             await self._transport.send_bytes(chunk.data)
