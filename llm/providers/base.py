@@ -294,6 +294,7 @@ class OpenAICompatibleProvider:
 
     async def _events(self, resp: httpx.Response) -> AsyncIterator[StreamEvent]:
         fragments: dict[int, dict[str, str]] = {}
+        produced_text = False
         finish_reason: str | None = None
         tokens_in: int | None = None
         tokens_out: int | None = None
@@ -332,6 +333,7 @@ class OpenAICompatibleProvider:
 
                 delta = choice.get("delta") or {}
                 if content := delta.get("content"):
+                    produced_text = True
                     yield TextChunk(text=content)
 
                 for fragment in delta.get("tool_calls") or []:
@@ -348,7 +350,7 @@ class OpenAICompatibleProvider:
                     # usually just a closing brace.
                     slot["arguments"] += function.get("arguments") or ""
 
-        if not terminated and finish_reason is None:
+        if not terminated and finish_reason is None and not produced_text:
             # The connection ended mid-stream with no terminator and no finish
             # reason, so the reply is truncated. Saying nothing here would hand the
             # caller a `StreamCompleted` and let half an answer pass for a whole one,
@@ -358,7 +360,16 @@ class OpenAICompatibleProvider:
             # The text already yielded stays yielded. It has been spoken by now and
             # cannot be un-said; what must not happen is the caller believing there
             # was no more.
-            raise ProviderError(f"{self.name}: stream ended without a terminator")
+            raise ProviderError(f"{self.name}: stream ended before any content")
+
+        if not terminated and finish_reason is None:
+            # Text arrived and then the stream stopped without saying it was done. The
+            # words already spoken cannot be un-said, so raising here would trade a
+            # partial answer for silence, which every degradation rule in SPEC exists
+            # to prevent. It is reported as truncated instead, so a caller and a
+            # waterfall can both tell it apart from a clean finish.
+            logger.warning("provider.stream.truncated", provider=self.name)
+            finish_reason = "truncated"
 
         if fragments:
             yield ToolCallsRequested(

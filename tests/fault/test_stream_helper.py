@@ -57,22 +57,33 @@ async def test_frames_arrive_before_the_stream_ends() -> None:
         assert seen == [DEFAULT_STREAM_WORDS[0]]
 
 
-async def test_a_dropped_stream_delivers_what_arrived_before_it_died() -> None:
-    """Half an answer is already spoken by this point, so the words that made it are
-    the words the listener heard."""
+async def test_a_dropped_stream_is_reported_as_truncated_not_raised() -> None:
+    """Half an answer is already spoken by this point, so raising would trade a partial
+    reply for silence, which every degradation rule in SPEC exists to prevent.
+
+    It is reported as truncated instead. The words that arrived stay delivered, and the
+    completion says plainly that it was not a clean finish, so a caller and a waterfall
+    can tell it apart from one. A live turn failed exactly this way and the user heard
+    nothing at all.
+    """
     with faulty_endpoint(Fault.STREAM_DROP, frames_before_fault=2) as server:
-        impl = provider(server.url)
-        seen: list[str] = []
+        events = [event async for event in provider(server.url).stream_completion([])]
 
-        with pytest.raises(ProviderError):
-            async for event in impl.stream_completion([]):
-                if isinstance(event, TextChunk):
-                    seen.append(event.text)
+    said = [event.text for event in events if isinstance(event, TextChunk)]
 
-    # Delivered before the drop, and it stays delivered: those words were spoken and
-    # cannot be un-said. What must not happen is the caller believing the answer was
-    # whole, which is what a silent end would have meant.
-    assert seen == list(DEFAULT_STREAM_WORDS[:2])
+    assert said == list(DEFAULT_STREAM_WORDS[:2])
+    assert isinstance(events[-1], StreamCompleted)
+    assert events[-1].finish_reason == "truncated"
+
+
+async def test_a_stream_that_dies_before_any_content_still_raises() -> None:
+    """Nothing was said, so there is no partial answer to preserve. A caller handed a
+    clean completion here would report an empty reply as a finished one."""
+    with (
+        faulty_endpoint(Fault.STREAM_DROP, frames_before_fault=0) as server,
+        pytest.raises(ProviderError),
+    ):
+        await heard(provider(server.url))
 
 
 async def test_a_malformed_frame_does_not_end_the_stream() -> None:

@@ -27,14 +27,20 @@ from typing import Protocol
 
 import structlog
 
+from llm.types import ProviderError
 from vaani.barge_in import AudioChunk, SpeakingTurn
 from vaani.budget import TurnClock, speak_within
 from vaani.endpoint import Endpointer, MicState
 from vaani.protocol import ClientMessage, Frame, ServerMessage
 from vaani.state import State, TurnState
-from vaani.tts import AUDIO_MIME
+from vaani.stt import SttError
+from vaani.tts import AUDIO_MIME, TtsError
 
 logger = structlog.get_logger(__name__)
+
+# Exceptions whose messages this project writes itself, so they name a reason rather
+# than echoing a provider. Anything else is logged by class only.
+SAFE_TO_LOG = (ProviderError, SttError, TtsError)
 
 
 @dataclass(frozen=True)
@@ -261,7 +267,15 @@ class VoiceSession:
             # Reported rather than raised. This is a task, so raising here surfaces
             # as an unretrieved exception with nothing to attribute it to, and the
             # user would hear silence with no reason given.
-            logger.warning("session.playback_failed", error=type(exc).__name__)
+            # The class alone was not diagnosable: a live turn failed with
+            # "ProviderError" and nothing in the logs could say which of four raises
+            # it was. Our own exception messages carry a reason and no provider body,
+            # so they are safe to log; `ProviderClientError` is excluded because it
+            # quotes the response, which can quote a transcript back.
+            detail = str(exc) if isinstance(exc, SAFE_TO_LOG) else ""
+            logger.warning(
+                "session.playback_failed", error=type(exc).__name__, detail=detail
+            )
             await self._say(
                 {
                     "type": ServerMessage.ERROR,
