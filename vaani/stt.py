@@ -194,9 +194,18 @@ class GroqWhisper:
     name = "groq-whisper"
     streaming = False
 
-    def __init__(self, api_key: str | None = None, model: str = GROQ_MODEL) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = GROQ_MODEL,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
         self._api_key = api_key or os.environ.get("GROQ_API_KEY")
         self._model = model
+        # An injected client is the seam that makes this method testable, and its
+        # absence is why the one call site no test could reach was the broken one.
+        # `OpenAICompatibleProvider` has had this from the start; this did not.
+        self._client = client
 
     async def transcribe(self, pcm: bytes) -> Transcript:
         if not self._api_key:
@@ -209,16 +218,19 @@ class GroqWhisper:
                 "vaani.stt.audio_ms": round(len(pcm) / 32),
             },
         ) as stage:
+            client = self._client or httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
             try:
-                async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-                    response = await client.post(
-                        GROQ_TRANSCRIBE_URL,
-                        headers={"Authorization": f"Bearer {self._api_key}"},
-                        files={"file": ("utterance.wav", to_wav(pcm), "audio/wav")},
-                        data={"model": self._model, "response_format": "verbose_json"},
-                    )
+                response = await client.post(
+                    GROQ_TRANSCRIBE_URL,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    files={"file": ("utterance.wav", to_wav(pcm), "audio/wav")},
+                    data={"model": self._model, "response_format": "verbose_json"},
+                )
             except httpx.HTTPError as exc:
                 raise SttError(f"{type(exc).__name__}") from exc
+            finally:
+                if self._client is None:
+                    await client.aclose()
 
             if response.status_code != 200:
                 # The status, never the body. A provider error body can quote the

@@ -31,7 +31,7 @@ SPEC_TABLE = {
         "vaani.stt.streaming",
         "vaani.stt.final_reused",
     },
-    "stt.request": {"vaani.stt.index", "vaani.stt.audio_ms"},
+    "stt.request": {"vaani.stt.index", "vaani.stt.audio_ms", "vaani.stt.final_chars"},
     "llm.generate": {"vaani.llm.rounds", "vaani.llm.first_token_ms"},
     "tts.synthesize": {
         "vaani.tts.voice",

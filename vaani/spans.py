@@ -18,7 +18,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 import spanlight
+import structlog
 from opentelemetry.trace import Span, Status, StatusCode
+
+logger = structlog.get_logger(__name__)
 
 TURN = "turn"
 VAD_ENDPOINT = "vad.endpoint"
@@ -49,7 +52,9 @@ CONTRACT: dict[str, frozenset[str]] = {
             "vaani.stt.final_reused",
         }
     ),
-    STT_REQUEST: frozenset({"vaani.stt.index", "vaani.stt.audio_ms"}),
+    STT_REQUEST: frozenset(
+        {"vaani.stt.index", "vaani.stt.audio_ms", "vaani.stt.final_chars"}
+    ),
     LLM_GENERATE: frozenset({"vaani.llm.rounds", "vaani.llm.first_token_ms"}),
     TTS_SYNTHESIZE: frozenset(
         {
@@ -81,6 +86,23 @@ class UndeclaredAttribute(KeyError):
     """An attribute this span is not allowed to carry, per SPEC's table."""
 
 
+# Whether a contract breach raises or is logged and dropped.
+#
+# Lenient by default, which is a correction rather than a preference. Raising took a
+# live turn down: `GroqWhisper` recorded a transcript length on the request span,
+# where it was not declared, and the only call site no test could reach was the one
+# that was wrong, because it needs a real API key. The user heard nothing and got
+# `UndeclaredAttribute`.
+#
+# Instrumentation that throws turns a mistyped attribute into an outage, which is the
+# lesson Spanlight recorded about a propagator that raised on a bad header. So in
+# production the attribute is dropped and the mistake is logged at error level, which
+# is loud without being fatal. `tests/conftest.py` turns strict on, so CI still fails
+# rather than warning, and the empty-panel failure this was built to prevent is caught
+# where it is cheap.
+strict = False
+
+
 class StageSpan:
     """A stage span that checks names on the way in.
 
@@ -95,15 +117,26 @@ class StageSpan:
         self._stage = stage
 
     def record(self, **attributes: object) -> None:
-        unknown = set(attributes) - CONTRACT[self._stage] - SHARED_ATTRIBUTES
-        if unknown:
-            raise UndeclaredAttribute(f"{self._stage} may not carry {sorted(unknown)}")
+        allowed = _permitted(self._stage, set(attributes))
         for key, value in attributes.items():
-            self.span.set_attribute(key, value)
+            if key in allowed:
+                self.span.set_attribute(key, value)
 
     def mark(self, event: str) -> None:
         """A point in time on this span, for a moment that is not a duration."""
         self.span.add_event(event)
+
+
+def _permitted(stage: str, offered: set[str]) -> set[str]:
+    """Which of these attributes the stage may carry, complaining about the rest."""
+    allowed = CONTRACT[stage] | SHARED_ATTRIBUTES
+    unknown = offered - allowed
+    if unknown:
+        message = f"{stage} may not carry {sorted(unknown)}"
+        if strict:
+            raise UndeclaredAttribute(message)
+        logger.error("spans.undeclared_attribute", stage=stage, attributes=sorted(unknown))
+    return allowed
 
 
 @contextmanager
@@ -127,10 +160,7 @@ def stage_span(
     if name not in CONTRACT:
         raise UndeclaredAttribute(f"{name} is not a declared stage span")
 
-    allowed = CONTRACT[name]
-    unknown = set(attributes) - allowed - SHARED_ATTRIBUTES
-    if unknown:
-        raise UndeclaredAttribute(f"{name} may not carry {sorted(unknown)}")
+    allowed = _permitted(name, set(attributes))
 
     # A plain span, not `spanlight.tool_span`. That helper names the span
     # `tool <name>` and stamps the tool attributes on it, which would make five
@@ -153,7 +183,8 @@ def stage_span(
         start_time=start_time,
     ) as span:
         for key, value in attributes.items():
-            span.set_attribute(key, value)
+            if key in allowed:
+                span.set_attribute(key, value)
         try:
             yield StageSpan(span, name)
         except Exception as exc:
