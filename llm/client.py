@@ -19,6 +19,13 @@ from llm.types import (
 
 logger = structlog.get_logger(__name__)
 
+# When the second request goes out. Provisional and labelled as such: it belongs at
+# the primary's measured p90, so that hedging costs extra tokens on roughly a tenth
+# of calls, and nothing has been measured yet. A number chosen by intuition here is
+# the mistake this portfolio has paid for twice, so it is named rather than inlined
+# and it moves when there is data.
+DEFAULT_HEDGE_AFTER_MS = 300
+
 
 class ChatClient:
     """Provider-agnostic chat-completion client.
@@ -76,6 +83,62 @@ class ChatClient:
         )
         return response
 
+    async def stream_hedged(
+        self,
+        provider: str,
+        messages: list[ChatMessage],
+        *,
+        hedge_to: str,
+        hedge_after_ms: int = DEFAULT_HEDGE_AFTER_MS,
+        **kwargs: object,
+    ) -> AsyncIterator[StreamEvent]:
+        """Race a second request against a slow first one, and keep the winner.
+
+        This is for a tail, not a median. A hard deadline with a failover makes the
+        tail worse rather than better: a missed deadline costs both attempts, so the
+        wasted wait plus a second time-to-first-token is spent in series and can
+        exceed the whole budget it was meant to protect. Hedging makes the worst case
+        the larger of the two rather than their sum.
+
+        `hedge_to` is required and must be a different provider, because hedging to
+        the same one correlates the very failures it is meant to survive: a provider
+        having a bad second gives you a second bad second, and the retry is spent
+        against the same queue that was already slow. It also doubles the pressure on
+        one rate limit, which on a free tier is how a hedge turns a slow call into a
+        429.
+
+        The loser is cancelled and its stream closed, so the abandoned request
+        releases its connection rather than waiting for a collector.
+        """
+        if hedge_to == provider:
+            raise ValueError(
+                "hedge_to must differ from provider: hedging to the same provider "
+                "correlates the failure it exists to survive"
+            )
+
+        primary = self.stream(provider, messages, **kwargs)
+        primary_first = asyncio.ensure_future(anext(primary, None))
+        done, _pending = await asyncio.wait([primary_first], timeout=hedge_after_ms / 1000)
+
+        if done and not primary_first.cancelled() and primary_first.exception() is None:
+            async for event in _continue(primary, primary_first.result()):
+                yield event
+            return
+
+        secondary = self.stream(hedge_to, messages, **kwargs)
+        secondary_first = asyncio.ensure_future(anext(secondary, None))
+        logger.info(
+            "llm.hedged", provider=provider, hedge_to=hedge_to, after_ms=hedge_after_ms
+        )
+
+        winner, loser, first = await _first_usable(
+            (primary, primary_first, provider), (secondary, secondary_first, hedge_to)
+        )
+        await _abandon(*loser)
+
+        async for event in _continue(winner, first):
+            yield event
+
     async def stream(
         self, provider: str, messages: list[ChatMessage], **kwargs: object
     ) -> AsyncIterator[StreamEvent]:
@@ -130,3 +193,75 @@ class ChatClient:
                     raise
 
             await asyncio.sleep(backoff_seconds(attempt))
+
+
+async def _continue(
+    stream: AsyncIterator[StreamEvent], first: StreamEvent | None
+) -> AsyncIterator[StreamEvent]:
+    """Re-attach an already-taken first event to the front of its own stream."""
+    if first is None:
+        return
+    yield first
+    async for event in stream:
+        yield event
+
+
+async def _first_usable(
+    left: tuple[AsyncIterator[StreamEvent], asyncio.Future, str],
+    right: tuple[AsyncIterator[StreamEvent], asyncio.Future, str],
+) -> tuple[
+    AsyncIterator[StreamEvent],
+    tuple[AsyncIterator[StreamEvent], asyncio.Future],
+    StreamEvent | None,
+]:
+    """Whichever request produces an event first, with the other returned to abandon.
+
+    A failure does not win. If the first to finish raised, the other is waited for
+    rather than the whole call failing, which is most of the value: the hedge covers
+    a provider that is broken as well as one that is slow.
+    """
+    pending = {left[1], right[1]}
+    by_future = {left[1]: left, right[1]: right}
+    last_error: BaseException | None = None
+
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for future in done:
+            stream, _future, name = by_future[future]
+            error = future.exception()
+            if error is not None:
+                logger.info("llm.hedge_lost", provider=name, error=type(error).__name__)
+                last_error = error
+                continue
+            other = right if future is left[1] else left
+            return stream, (other[0], other[1]), future.result()
+
+    if last_error is not None:
+        raise last_error
+    raise ProviderError("both hedged requests produced nothing")
+
+
+async def _abandon(stream: AsyncIterator[StreamEvent], pending: asyncio.Future) -> None:
+    """Close the losing stream so its connection is released now, not eventually.
+
+    The pending `anext` is cancelled first, and that order is the whole method.
+    `aclose` on a generator that is currently being advanced raises "asynchronous
+    generator is already running", so closing while the losing request is still
+    waiting for its first token does nothing at all. It went unnoticed because the
+    failure was swallowed by a bare `except Exception`, which is why only
+    `RuntimeError` is tolerated here now and anything else is logged.
+    """
+    pending.cancel()
+    # `gather` with `return_exceptions` rather than a bare await, because the loser
+    # may have already failed and awaiting a failed future re-raises it. That failure
+    # is the reason the hedge was fired and the backup answered, so surfacing it here
+    # would turn a call the user heard answered into an error.
+    await asyncio.gather(pending, return_exceptions=True)
+
+    try:
+        await stream.aclose()  # type: ignore[attr-defined]
+    except RuntimeError:
+        # Already finishing on its own. Nothing left to release.
+        pass
+    except Exception as exc:
+        logger.info("llm.hedge_abandon_failed", error=type(exc).__name__)
