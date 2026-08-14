@@ -26,6 +26,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from llm import ChatClient
 from vaani.endpoint import Endpointer
 from vaani.fillers import FillerBank, Purpose, read_chunks
+from vaani.history import Conversation
 from vaani.llm_turn import StreamedTurn
 from vaani.pipeline import StreamingPipeline
 from vaani.protocol import (
@@ -112,7 +113,7 @@ class SocketTransport:
 
 
 def build_answer(
-    transcriber: GroqWhisper, tts: FailingOverTts
+    transcriber: GroqWhisper, tts: FailingOverTts, history: Conversation
 ) -> Callable[[AsyncIterator[bytes], Callable[[], bool]], AsyncIterator[bytes]]:
     """The overlapped pipeline, as the one callable a session needs.
 
@@ -126,6 +127,7 @@ def build_answer(
         stt=RecoveringStt(ChunkedStt(transcriber), transcriber),
         turn=StreamedTurn(llm=ChatClient()),
         tts=tts,
+        history=history,
     )
     return pipeline.run
 
@@ -204,15 +206,20 @@ async def voice(socket: WebSocket) -> None:
         # promise, so this path runs whenever it breaks rather than only on the day
         # somebody remembers to test it.
         tts = FailingOverTts(EdgeTts(), EdgeTts())
+        # One record, two writers of different things. The pipeline reads it to build the
+        # prompt; the session decides what goes into it, because only the transport knows
+        # which sentences the listener actually heard.
+        history = Conversation()
         session = VoiceSession(
             transport=SocketTransport(socket),
-            answer=build_answer(transcriber, tts),
+            answer=build_answer(transcriber, tts, history),
             filler=speak_filler,
             endpointer=Endpointer(semantic=True),
             # Read off the synthesiser rather than assumed, so the playout estimate is a
             # byte count divided by the rate the audio was actually encoded at.
             bytes_per_second=tts.bytes_per_second,
             backchannel=build_backchannel_check(transcriber),
+            history=history,
         )
         try:
             await session.run()

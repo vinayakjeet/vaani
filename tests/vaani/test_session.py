@@ -613,3 +613,39 @@ async def test_a_real_filler_clip_pushes_the_answer_past_the_target() -> None:
 
     assert voice.clock.first_answer_heard_ms > 1500
     assert not voice.clock.met_p50_target
+
+
+async def test_a_completed_reply_enters_the_conversation_record() -> None:
+    """The control for the test below. A record that never commits would pass that one
+    and would also mean the agent remembers nothing it said."""
+    voice, transport = session(*speech_then_silence())
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.sleep(0.1)
+    await stop(task)
+
+    roles = [m.role for m in voice.history.messages]
+    assert roles == ["user", "assistant"]
+    assert voice.history.messages[-1].content == "Haan, aap eligible hain."
+
+
+async def test_an_interrupted_reply_is_not_remembered_as_fully_spoken() -> None:
+    """The failure this record was shaped around. Text staged when the model produced it
+    would leave the agent believing it said a sentence nobody heard, and coherence fails
+    two turns later when it refers back to a figure it never spoke."""
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        *[frame(SPEECH, 1) for _ in range(60)],
+        chunks=[b"a1", b"a2", b"a3", b"a4"],
+        delay=0.02,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: voice._state.interrupted_previous), 2.0)
+    await stop(task)
+
+    said = [m.content for m in voice.history.messages if m.role == "assistant"]
+    # Either nothing was heard, or a prefix of it was. What must never appear is the
+    # whole sentence, because the audio for its tail was thrown away.
+    assert said in ([], [""]) or not said[0].endswith("eligible hain.")

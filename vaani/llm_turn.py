@@ -57,7 +57,10 @@ class StreamedTurn:
         self.sourced: set[float] = set()
 
     async def run(
-        self, question: str, still_current: Callable[[], bool] | None = None
+        self,
+        question: str,
+        still_current: Callable[[], bool] | None = None,
+        history: list[ChatMessage] | None = None,
     ) -> AsyncIterator[str]:
         """Stream the reply, abandoning the turn if it stops being the current one.
 
@@ -70,14 +73,23 @@ class StreamedTurn:
         # listener waited for all of them. Time to first token is an event on it
         # rather than the duration, which is how long the model talked for.
         with stage_span(LLM_GENERATE, **{"gen_ai.system": self._provider}) as stage:
-            async for chunk in self._rounds(question, stage, still_current):
+            async for chunk in self._rounds(question, stage, still_current, history):
                 yield chunk
 
     async def _rounds(
-        self, question: str, stage, still_current: Callable[[], bool] | None
+        self,
+        question: str,
+        stage,
+        still_current: Callable[[], bool] | None,
+        history: list[ChatMessage] | None = None,
     ) -> AsyncIterator[str]:
+        # The static prompt stays first and the volatile state follows it, which is the
+        # ordering that makes the prefix cacheable. Groq caches automatically on supported
+        # models, so putting history in front of the system prompt would silently give up
+        # about half the input cost and a measurable slice of time to first token.
         messages = [
             ChatMessage(role="system", content=SYSTEM_PROMPT),
+            *(history or []),
             ChatMessage(role="user", content=question),
         ]
         started = time.monotonic()

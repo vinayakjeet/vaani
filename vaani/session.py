@@ -31,6 +31,7 @@ from llm.types import ProviderError
 from vaani.barge_in import AudioChunk, SpeakingTurn
 from vaani.budget import TurnClock, speak_within
 from vaani.endpoint import Endpointer, MicState
+from vaani.history import Conversation
 from vaani.protocol import FRAME_BYTES, ClientMessage, Frame, ServerMessage
 from vaani.quality import Interactivity, Interruption
 from vaani.state import State, TurnState
@@ -99,6 +100,7 @@ class VoiceSession:
         endpointer: Endpointer | None = None,
         bytes_per_second: int = 0,
         backchannel: Callable[[bytes], Awaitable[bool]] | None = None,
+        history: Conversation | None = None,
     ) -> None:
         self._transport = transport
         self._answer = answer
@@ -138,6 +140,10 @@ class VoiceSession:
         # What the latency numbers cannot see. Per session rather than per turn, because
         # every ratio in it is about a conversation rather than an utterance.
         self.quality = Interactivity()
+        # Shared with the pipeline, which reads it to build the prompt. Every write is
+        # here, because a write needs the generation and the transport is the only thing
+        # that knows whether a sentence's audio actually went out.
+        self.history = history if history is not None else Conversation()
         self.clock: TurnClock | None = None
 
     async def run(self) -> None:
@@ -396,6 +402,12 @@ class VoiceSession:
             # Counted here rather than at synthesis, because this is the text the listener
             # is about to hear and it is already past the grounding check.
             self.quality.sentence_spoken()
+            # Staged, not committed. Whether the listener hears it is decided by the
+            # transport, which is the whole point of the record's shape: text whose audio
+            # is blocked or abandoned never enters the conversation at all.
+            self.history.stage(generation, text)
+        elif kind == ServerMessage.TRANSCRIPT:
+            self.history.user_said(text)
         await self._say({"type": kind, "text": text})
 
     async def _play(self, speaking: SpeakingTurn) -> None:
@@ -428,6 +440,10 @@ class VoiceSession:
                 # already moved the machine out of SPEAKING. So this is the one place that
                 # can say a reply was delivered whole, which is what a recovery means.
                 self.quality.response_delivered()
+                # The turn ran to the end, so all of its text was heard and enters the
+                # record whole. Reached only here: an interruption has already moved the
+                # machine out of SPEAKING, so it cannot arrive at this branch.
+                self.history.commit(speaking.generation)
                 self._state.to(State.LISTENING)
                 self._endpointer.reset()
             else:
@@ -447,6 +463,12 @@ class VoiceSession:
         # Bumping the generation first also makes every chunk already dequeued stale
         # immediately, so the transport drops it without depending on how quickly the
         # producer stops.
+        # Read before the playout estimate is dropped, and that order is the measurement.
+        # What is still queued is what the listener never heard, so it decides where the
+        # reply is cut, and `drop_playout` two lines down zeroes it.
+        interrupted = self._state.generation
+        self.history.truncate(interrupted, self._turns.playing_ms_remaining())
+
         self._turns.drop_playout()
         self._barge = None
         self._begin_listening()
@@ -534,6 +556,9 @@ class VoiceSession:
         # already queued in front of it, not its own length.
         if self.clock is not None and self.clock.first_answer_audio_ms is not None:
             self.clock.mark_heard(self._turns.playing_ms_remaining())
+            # Answer audio only, so the record's estimate of what was heard is not
+            # shifted by a filler clip the listener heard and that is not the reply.
+            self.history.note_audio(chunk.generation, played)
 
         self._turns.note_audio_queued(played)
 

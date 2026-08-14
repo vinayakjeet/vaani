@@ -12,6 +12,59 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-14: The conversation record admits a sentence only once its audio has gone out
+
+**Context:** M2.7b, and the fact that Vaani had no conversation record at all. Each turn
+built `[system, user]` fresh, so the agent could not refer to anything it had said. Adding
+history is the obvious next step and it is also the moment the bug M2.7 exists to prevent
+gets designed in or out, which is why the two were done together rather than in the order
+they were written down.
+
+**Decision:** an assistant turn is *staged* when the model produces it and *committed* only
+when its audio has reached the transport. Text whose audio was blocked or abandoned never
+enters the record, so the ordinary interruption is handled by not writing rather than by
+repairing. Reconstruction is the fallback for the single turn that was half spoken: the
+fraction of the reply's audio that had played, applied to its characters, trimmed back to
+a word boundary.
+
+That ordering is the half of Bolna's design two earlier readings missed, because it is not
+in `sync_history` at all. It is `_stage_assistant_history` and its pair, forty lines away
+and much simpler than the mechanism they exist to make rare.
+
+**The split of responsibility is the part worth stating.** The pipeline reads the record to
+build the prompt; the session performs every write. A write needs the generation, and the
+transport is the only thing that knows whether a sentence's audio actually went out. This
+needed no change to the `Answer` protocol, because the session's report callbacks already
+close over the generation, which is a seam that turned out to be load-bearing for a reason
+it was not built for.
+
+**Alternatives considered:** committing when the model produces the text, which is what
+every implementation does by default and is the bug. Carrying a sentence index on every
+audio chunk so each sentence could be committed exactly when its own audio was sent, which
+is more precise and costs a type change through `speak_as_they_arrive`, `SpeakingTurn` and
+the `Answer` protocol; the proportional estimate is within a word of the same answer and
+needs none of it. Word marks from the synthesiser and a played-position report from the
+client, which the original M2.7 assumed were required and which the playout estimate makes
+unnecessary.
+
+**Consequences.** Four guards, three read off Bolna and one from our own shape, each of
+which is a bug the record would otherwise ship: refuse to trim without evidence, or a
+second cleanup deletes a fully heard reply; never trim an already-committed turn, because
+cleanups run more than once and the later one knows less; count answer audio only, since
+filler plays *before* the answer and counting it pushes the estimate past the end; and drop
+rather than commit empty, because an empty assistant message is not the same as no message
+and a model reads it as a refusal.
+
+History goes after the system prompt and before the user turn, which is the ordering that
+keeps the static prefix cacheable. Groq caches automatically on supported models, so
+putting history first would give up about half the input cost and a slice of time to first
+token without anything in the code looking wrong. The record is bounded at eight exchanges,
+because the prompt grows with the conversation and this runs on a free tier.
+
+`llm_turn` now takes history, which means the unstreamed baseline in `vaani/turn.py` and
+the streamed path can be given the same conversation, so the ablation is not comparing a
+stateless arm against a stateful one.
+
 ## 2026-08-13: The model may phrase an eligibility answer and may not introduce a number
 
 **Context:** M3.9 and M1.10, which turn out to be one decision from two ends. `vaani/tools.py`

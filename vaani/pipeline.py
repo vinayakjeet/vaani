@@ -29,6 +29,7 @@ import structlog
 from vaani.confirm import needs_confirming, question
 from vaani.endpoint import Endpointer
 from vaani.grounding import check, figures
+from vaani.history import Conversation
 from vaani.llm_turn import StreamedTurn
 from vaani.numerals import normalise
 from vaani.stt import StreamingStt, SttError
@@ -63,6 +64,7 @@ class StreamingPipeline:
         endpointer: Endpointer | None = None,
         voice: str = VOICE_HI,
         confirm: bool = True,
+        history: Conversation | None = None,
     ) -> None:
         self._stt = stt
         self._turn = turn
@@ -71,6 +73,10 @@ class StreamingPipeline:
         # because it is an ablation arm rather than a setting: it spends latency to
         # avoid a wrong eligibility answer, and both sides of that trade get measured.
         self._confirm = confirm
+        # Shared with the session, which owns the other half of the record: this stages
+        # what the model produced and the session decides what was heard, because only
+        # the transport knows which audio actually went out.
+        self._history = history if history is not None else Conversation()
         # Semantic endpointing on by default here and off in the baseline, which is
         # what keeps the ablation comparing the technique against its absence rather
         # than against itself.
@@ -118,7 +124,10 @@ class StreamingPipeline:
         def grounded(sentence: str) -> str:
             return check(sentence, said_by_user | self._turn.sourced)
 
-        replies = self._turn.run(spoken.text, still_current)
+        # Read at the moment the turn starts rather than held from construction, because
+        # the session has been writing into it: the previous turn's reply was committed,
+        # truncated or dropped between then and now depending on what was heard.
+        replies = self._turn.run(spoken.text, still_current, history=self._history.for_model())
         async for chunk in speak_as_they_arrive(
             replies, self._tts, self._voice, on_sentence=on_sentence, validate=grounded
         ):
