@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import array
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -145,6 +146,13 @@ class Endpointer:
     # different questions: whether a pending endpoint should be cancelled, and how far
     # back the barge-in clock has to be moved.
     _speech_run_ms: int = field(default=0, init=False)
+    # Wall-clock nanoseconds of the first frame this listening period that cleared the
+    # threshold, for backdating `vad.endpoint`'s span. `time.time_ns` rather than
+    # `time.monotonic_ns`: `stage_span`'s `start_time` is read by the same clock
+    # OpenTelemetry uses to close the span, and mixing the two would make every
+    # `vad.endpoint` duration wrong by however far the two clocks have drifted apart
+    # since the process started.
+    _speech_began_ns: int | None = field(default=None, init=False)
     _partial_complete: bool = field(default=False, init=False)
     # The turn's audio, kept only when an audio-based completion arm is in use. Capped at
     # what that arm reads, because an uncapped buffer on a 512MB instance is a way to lose
@@ -211,6 +219,16 @@ class Endpointer:
         """
         return self._speech_run_ms
 
+    @property
+    def speech_began_ns(self) -> int | None:
+        """When the first frame attributed to this turn's speech arrived, wall clock.
+
+        `None` before any speech at all this listening period, which is the honest
+        state for a span nothing has backdated yet: the caller reads this only once
+        `accept` has returned true, and by then it is never None.
+        """
+        return self._speech_began_ns
+
     def diagnose(self) -> MicState:
         """Whether the microphone is working, judged only while waiting for speech.
 
@@ -255,6 +273,11 @@ class Endpointer:
                 del self._heard[:-COMPLETION_AUDIO_BYTES]
 
         if speaking:
+            if self._speech_began_ns is None:
+                # Backdated by one frame's width: this frame's audio began FRAME_MS
+                # before it was handed to `accept`, not at the moment of the call, the
+                # same reasoning `bench/bargein.py` uses for its own ground truth.
+                self._speech_began_ns = time.time_ns() - FRAME_MS * 1_000_000
             self.speech_ms += FRAME_MS
             self._speech_run_ms += FRAME_MS
             if self.speech_ms >= self.min_speech_ms:
@@ -300,6 +323,7 @@ class Endpointer:
         self.silence_ms = 0
         self._started = False
         self._speech_run_ms = 0
+        self._speech_began_ns = None
         self._partial_complete = False
         self.waiting_ms = 0
         self.peak_rms = 0.0

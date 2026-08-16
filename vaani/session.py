@@ -35,6 +35,7 @@ from vaani.fillers import Purpose
 from vaani.history import Conversation
 from vaani.protocol import FRAME_BYTES, ClientMessage, Frame, ServerMessage
 from vaani.quality import Interactivity, Interruption
+from vaani.spans import TURN, VAD_ENDPOINT, stage_span
 from vaani.state import State, TurnState
 from vaani.stt import SttError
 from vaani.tts import AUDIO_MIME, TtsError, playout_seconds
@@ -79,6 +80,22 @@ class Incoming:
     control: str | None = None
     frame: Frame | None = None
     disconnected: bool = False
+
+
+@dataclass(frozen=True)
+class PendingTurnSpan:
+    """What `turn`'s span needs, captured where it is known and read where it ends.
+
+    `_begin_answering` knows the start; `_send_audio` knows when playback actually
+    begins, which is the span's end per `bench/stages.md`. Carrying it as one small
+    object between the two is less to get wrong than three separate attributes on
+    `self` that have to be kept in step by hand.
+    """
+
+    generation: int
+    began_ns: int | None
+    index: int
+    interrupted_previous: bool
 
 
 class Transport(Protocol):
@@ -162,6 +179,12 @@ class VoiceSession:
         # logged, because a bench that had to parse its own log lines back would be
         # measuring the logging.
         self.barges: list[BargeClock] = []
+        # Counted from one, per session, for `vaani.turn.index`. A waterfall reading
+        # spans out of order still knows which turn of the conversation each one was.
+        self._turn_index = 0
+        # The `turn` span's start, captured in `_begin_answering` and consumed in
+        # `_send_audio` once playback actually begins, which is where the span ends.
+        self._pending_turn_span: PendingTurnSpan | None = None
         # What the latency numbers cannot see. Per session rather than per turn, because
         # every ratio in it is about a conversation rather than an utterance.
         self.quality = Interactivity()
@@ -212,8 +235,26 @@ class VoiceSession:
         if control == ClientMessage.STOP:
             return True
         if control == ClientMessage.START:
-            await self._stop_speaking()
-            self._begin_listening()
+            if self._state.state in (State.THINKING, State.SPEAKING):
+                # A client asking to start over while the agent is still answering is
+                # asking for the same thing an explicit interrupt is, and the reply in
+                # flight needs the same accounting `_interrupt` already gets right:
+                # truncated to what was actually heard, not silently orphaned in
+                # `Conversation._staged` and not committed as complete for having been
+                # cut off by a new START rather than an INTERRUPT.
+                #
+                # Found writing a test for the turn span, not from a report: calling
+                # `_stop_speaking` before `_begin_listening` here, the reverse of
+                # `_interrupt`'s order, let `_play`'s own teardown see the state still
+                # SPEAKING and commit the turn as though it had finished, and computed
+                # `interrupted_previous` against the state `_begin_listening` had
+                # already changed by the time it ran. Not currently reachable by the
+                # real client, which sends START only once at socket-open, but the
+                # state machine's own docstring calls this a legal barge-in and it
+                # was not behaving like the other one.
+                await self._interrupt()
+            else:
+                self._begin_listening()
         elif control == ClientMessage.INTERRUPT:
             # The whole point of the split. This is read while audio is still going
             # out, so it is acted on now rather than after the answer finishes.
@@ -237,6 +278,7 @@ class VoiceSession:
         await self._frames.put(frame.pcm)
 
         if self._endpointer.accept(frame.pcm):
+            self._span_vad_endpoint()
             await self._frames.put(None)
             await self._begin_answering()
             return
@@ -409,6 +451,59 @@ class VoiceSession:
         if state is MicState.TOO_QUIET and self._endpointer.speech_ms == 0:
             await self._say({"type": ServerMessage.CHECKING_IN})
 
+    def _span_vad_endpoint(self) -> None:
+        """The `vad.endpoint` span, emitted the instant the endpointer fires.
+
+        Both boundaries are already known at this one point: the start is the first
+        frame that cleared the threshold, backdated on the endpointer itself, and the
+        end is now. A context manager entered and left in the same statement is the
+        honest shape for a span whose whole extent is already in the past.
+        """
+        began = self._endpointer.speech_began_ns
+        if began is None:
+            # Cannot happen on the path that calls this: `accept` only returns true
+            # once `_started`, which requires speech to have begun. Guarded anyway,
+            # because a span with a fabricated start is worse than a missing one.
+            logger.error("session.vad_span_missing_start")
+            return
+        attributes: dict[str, object] = {
+            "vaani.vad.speech_ms": self._endpointer.speech_ms,
+            "vaani.vad.trailing_silence_ms": self._endpointer.trailing_silence_ms,
+        }
+        if self._endpointer.aggressiveness is not None:
+            attributes["vaani.vad.aggressiveness"] = self._endpointer.aggressiveness
+        with stage_span(VAD_ENDPOINT, start_time=began, **attributes):
+            pass
+
+    def _span_turn(self, generation: int) -> None:
+        """The `turn` span: first frame of speech to playback starting, filler or not.
+
+        Matches `first_audio_ms` in `bench/stages.md`'s three-number table rather than
+        `first_answer_audio_ms`: `turn` wraps every stage including
+        `playback.first_audio`, whose own start is the same "first chunk of any kind"
+        moment this already is.
+        """
+        pending = self._pending_turn_span
+        self._pending_turn_span = None
+        if pending is None or pending.generation != generation:
+            # Stale or absent. A generation mismatch means the turn this chunk belongs
+            # to was never the one `_begin_answering` opened this pending span for,
+            # which should not happen given generations only move forward, but a
+            # missing span beats a mislabelled one.
+            return
+        if pending.began_ns is None:
+            logger.info("session.turn_span_skipped", generation=generation)
+            return
+        with stage_span(
+            TURN,
+            start_time=pending.began_ns,
+            **{
+                "vaani.turn.index": pending.index,
+                "vaani.turn.interrupted": pending.interrupted_previous,
+            },
+        ):
+            pass
+
     def _begin_listening(self) -> None:
         self._state.begin()
         self._endpointer.reset()
@@ -420,7 +515,32 @@ class VoiceSession:
     ) -> None:
         self._state.to(State.THINKING)
         generation = self._state.generation
+        # Found alongside the turn span: `_announced` was compared against
+        # `chunk.generation` alone, on the assumption every new turn has a new
+        # generation. That is only true across an interrupt; an ordinary second
+        # question, asked after the first answer finished without ever being cut
+        # off, keeps the same generation the whole session, since nothing but an
+        # interrupt or a fresh START advances it. So a second, uninterrupted turn's
+        # first chunk compared equal to the value the first turn already left here,
+        # AUDIO_START was never sent again, and the client had no signal to open a
+        # playback buffer for a reply the server was already sending. Reset once per
+        # turn, which `_begin_answering` runs exactly once for regardless of whether
+        # the generation actually moved, is what makes the check correct again.
+        self._announced = None
         self.quality.turn_started()
+        self._turn_index += 1
+        # `speech_began_ns` before the reset below clears it, same rule as the clock
+        # two lines down. None on the path that resolves a verified interruption: the
+        # interrupting audio is written straight into the frame queue in `_interrupt`
+        # without passing through `accept`, so the endpointer never saw it and has
+        # nothing to backdate from. The turn span is skipped rather than started from
+        # a fabricated time; `_send_audio` is where that is decided.
+        self._pending_turn_span = PendingTurnSpan(
+            generation=generation,
+            began_ns=self._endpointer.speech_began_ns,
+            index=self._turn_index,
+            interrupted_previous=self._state.interrupted_previous,
+        )
         # Read before the reset, and that order is the whole measurement.
         #
         # The clock is backdated to the last frame of speech, which is `silence_ms`
@@ -662,6 +782,7 @@ class VoiceSession:
                     "generation": chunk.generation,
                 }
             )
+            self._span_turn(chunk.generation)
 
         # Playout advances by the audio's own duration, not by how long the send took, because
         # a chunk starts playing when the previous one ends.

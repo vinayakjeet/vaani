@@ -7,8 +7,9 @@ from collections.abc import AsyncIterator, Callable
 import pytest
 
 from vaani import session as session_module
+from vaani.endpoint import DEFAULT_TRAILING_SILENCE_MS
 from vaani.fillers import Purpose
-from vaani.protocol import ClientMessage, Frame, ServerMessage
+from vaani.protocol import FRAME_MS, ClientMessage, Frame, ServerMessage
 from vaani.session import Incoming, VoiceSession
 from vaani.stt import SttError
 
@@ -456,6 +457,158 @@ async def test_frames_from_a_stale_generation_are_ignored() -> None:
     await stop(task)
 
     assert transport.sent_audio == []
+
+
+def spans_named(exported, name: str) -> list:
+    return [span for span in exported.get_finished_spans() if span.name == name]
+
+
+async def test_a_turn_emits_its_vad_endpoint_span(exported) -> None:
+    """M1.6's actual gap: the span was declared in the contract and defined in
+    `bench/stages.md`, and nothing anywhere ever created one."""
+    voice, transport = session(*speech_then_silence())
+
+    task = await run_until_audio(voice, transport)
+    await stop(task)
+
+    spans = spans_named(exported, "vad.endpoint")
+    assert len(spans) == 1
+    attrs = spans[0].attributes
+    assert attrs["vaani.vad.speech_ms"] > 0
+    assert attrs["vaani.vad.trailing_silence_ms"] == voice._endpointer.trailing_silence_ms
+
+
+async def test_a_turn_emits_its_turn_span_with_a_positive_duration(exported) -> None:
+    """Backdated to the first frame of speech, not created at request time, so its
+    duration includes the endpoint wait the same way `TurnClock` already does."""
+    voice, transport = session(*speech_then_silence())
+
+    task = await run_until_audio(voice, transport)
+    await stop(task)
+
+    spans = spans_named(exported, "turn")
+    assert len(spans) == 1
+    assert spans[0].attributes["vaani.turn.index"] == 1
+    assert spans[0].attributes["vaani.turn.interrupted"] is False
+    assert spans[0].end_time > spans[0].start_time
+
+
+class QueueTransport:
+    """Like `FakeTransport`, except more can be fed in after a wait.
+
+    `FakeTransport`'s script is a plain list: once exhausted, `receive` sleeps for an
+    hour, and appending to the list after that does not wake it, since nothing is
+    watching the list. This one blocks on an `asyncio.Queue`, so a `feed` from the
+    test after confirming something else has genuinely finished is delivered rather
+    than raced against a queue whose length the test cannot see.
+    """
+
+    def __init__(self, *incoming: Incoming | str) -> None:
+        self._incoming: asyncio.Queue[Incoming] = asyncio.Queue()
+        self.feed(incoming)
+        self.sent_json: list[dict] = []
+        self.sent_audio: list[bytes] = []
+        self.audio_gate = asyncio.Event()
+
+    def feed(self, items) -> None:
+        for item in items:
+            self._incoming.put_nowait(item)
+
+    async def receive(self) -> Incoming:
+        return await self._incoming.get()
+
+    async def send_json(self, payload: dict) -> None:
+        self.sent_json.append(payload)
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent_audio.append(data)
+        self.audio_gate.set()
+
+    def kinds(self) -> list[str]:
+        return [str(message.get("type")) for message in self.sent_json]
+
+
+async def test_a_second_turn_increments_the_turn_index(exported) -> None:
+    """The session's own generation counter does not move between two ordinary,
+    uninterrupted turns; only `begin()` advances it, on a barge-in or a fresh START.
+    Both turns here are tagged with the one generation the session actually owns
+    throughout, which is the property `_state.owns` checks incoming frames against.
+
+    Turn 2's frames are fed only once turn 1's `AUDIO_END` has actually been sent.
+    The first version of this test used `AFTER_AUDIO`, a gate already satisfied by
+    turn 1's first chunk, so the scripted frames behind it arrived while the agent
+    was still SPEAKING and were read as a barge-in on turn 1 rather than a second,
+    ordinary one.
+
+    Turn 1's own silence tail is trimmed to just past `trailing_silence_ms` rather
+    than reusing `speech_then_silence`'s generous 60 frames: whatever is left
+    unconsumed when the endpoint fires is still ahead of turn 2's frames in the same
+    queue, and 60 frames of backlog was enough to make this test wait on real
+    wall-clock time it did not need to spend.
+    """
+    trailing_frames = DEFAULT_TRAILING_SILENCE_MS // FRAME_MS + 2
+    turn = [frame(SPEECH, 1) for _ in range(30)]
+    turn += [frame(SILENCE, 1) for _ in range(trailing_frames)]
+    transport = QueueTransport(control(ClientMessage.START), *turn)
+    voice = VoiceSession(
+        transport=transport, answer=answering([b"a1", b"a2"]), filler=filler,
+        bytes_per_second=6000,
+    )
+
+    task = asyncio.create_task(voice.run())
+    await asyncio.wait_for(transport.audio_gate.wait(), timeout=2.0)
+    await asyncio.wait_for(_until(lambda: ServerMessage.AUDIO_END in transport.kinds()), 2.0)
+    transport.feed(turn)
+    await asyncio.wait_for(_until(lambda: len(spans_named(exported, "turn")) >= 2), 5.0)
+    await stop(task)
+
+    indices = sorted(span.attributes["vaani.turn.index"] for span in spans_named(exported, "turn"))
+    assert indices == [1, 2]
+
+
+async def test_a_turn_restarted_by_start_marks_interrupted_previous(exported) -> None:
+    """The endpointer runs normally on the new turn's own speech here, unlike the
+    verified-interruption path, so this is the case that actually exercises
+    `vaani.turn.interrupted=True` on a span with a real start time."""
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        control(ClientMessage.START),
+        *speech_then_silence(generation=2),
+        chunks=[b"a1", b"a2", b"a3", b"a4"],
+        delay=0.02,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: len(spans_named(exported, "turn")) >= 2), 2.0)
+    await stop(task)
+
+    by_index = sorted(spans_named(exported, "turn"), key=lambda s: s.attributes["vaani.turn.index"])
+    assert by_index[1].attributes["vaani.turn.interrupted"] is True
+
+
+async def test_a_resolved_interruptions_turn_span_is_skipped_not_fabricated(exported) -> None:
+    """The interrupting audio is written straight into the frame queue in `_interrupt`,
+    bypassing `accept`, so the endpointer has no backdated start to give this turn. A
+    span with a start time invented for the occasion would be worse than none."""
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        *[frame(SPEECH, 1) for _ in range(20)],
+        *[frame(SILENCE, 1) for _ in range(60)],
+        chunks=[b"a1", b"a2", b"a3", b"a4"],
+        delay=0.02,
+        backchannel=False,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: voice._state.interrupted_previous), 2.0)
+    await asyncio.sleep(0.1)
+    await stop(task)
+
+    # One turn span: the first, ordinary one. The second, born from the resolved
+    # interruption, is the one with nothing to backdate from.
+    assert len(spans_named(exported, "turn")) == 1
 
 
 async def test_stop_ends_the_session() -> None:

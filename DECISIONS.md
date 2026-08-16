@@ -12,6 +12,131 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: An explicit START while the agent is speaking now orders itself like every other interrupt
+
+**Context:** found in the same pass as the two entries below, while a test for the new
+`turn` span needed a case where `vaani.turn.interrupted` is true on a turn that still has
+a valid backdated start. `_interrupt` calls `_begin_listening()` before
+`_stop_speaking()`, deliberately: `TurnState.begin()` reads whether the turn it is
+displacing was THINKING or SPEAKING, and the cancelled turn's own `_play` teardown reads
+the state `begin()` just changed to decide whether to commit its reply as fully heard.
+Get the order backwards and the teardown sees SPEAKING, commits the interrupted reply as
+complete, and `begin()` computes `interrupted_previous` against a state that has already
+moved past SPEAKING by the time it runs. `_on_control`'s handling of an explicit `START`
+had exactly the backwards order, `_stop_speaking` then `_begin_listening`, so a START
+arriving mid-answer committed the cut-off reply as whole and reported the new turn as
+uninterrupted.
+
+**Decision:** `_on_control` now calls `_interrupt()` for `START` when the state is
+THINKING or SPEAKING, matching the ordering `_interrupt` already gets right, and keeps
+the plain `_begin_listening()` path for the ordinary case, state already IDLE or
+LISTENING. Conditional rather than always routing through `_interrupt`, to avoid sending
+a second `READY` on every session's very first message: `run` already sends one
+unconditionally before reading anything, and `_interrupt` sends its own at the end.
+
+**Alternatives considered:** always calling `_interrupt()` regardless of state, rejected
+for the double-`READY` reason above on the one path every session takes.
+
+**Consequences:** the real client sends `START` exactly once, at socket-open, when state
+is always IDLE, so this specific ordering was not reachable by anything a browser does
+today; it is a latent defect closed before it could become live, the same shape of
+finding as the two entries below.
+
+## 2026-08-17: A second, uninterrupted turn never got its own AUDIO_START, silently, since the turn span was added
+
+**Context:** building `bench/waterfall.py` needed real spans to read, which meant first
+fixing M1.6's actual gap: `vad.endpoint` and `turn` were declared and defined but never
+emitted (separate entry, this file). Testing the fix against a session with two ordinary,
+uninterrupted turns rather than one exposed something the span work was not looking for.
+
+`_send_audio` decides whether to send `AUDIO_START` by comparing `self._announced` to
+`chunk.generation`, on the assumption that a new turn always carries a new generation.
+That is only true across an interrupt. `TurnState.generation` advances exclusively inside
+`begin()`, called only from an explicit `START` control message or from `_interrupt`;
+an ordinary second question, asked after the first answer finished on its own with
+nothing cutting it off, triggers `_begin_answering` again through the same endpoint-fires
+path the first turn used, with the generation `_state` already had. So the second turn's
+first chunk compared its generation against a value `_announced` already held from the
+first turn, found them equal, and never sent `AUDIO_START` at all. The client's own
+handler for that message is what opens a fresh playback buffer; without it, whatever
+audio the server sent for that second turn had nothing telling the browser to expect it.
+
+This was not reachable by a single-turn smoke test, which is every test this project had
+run against a live browser so far, and it was not reachable by the fault-injection suite
+either, which exercises failure inside one turn, not the ordinary case of a second one
+following a clean first. It surfaced only because the two new spans needed a two-turn
+session to prove `vaani.turn.index` actually counted past one.
+
+**Decision:** `_begin_answering` resets `self._announced` to `None` at its own start,
+once per turn, unconditionally. `_begin_answering` runs exactly once per new turn
+regardless of whether the generation moved, which `chunk.generation` alone does not, so
+this is the one place that reliably knows a new turn has begun. The comparison in
+`_send_audio` is unchanged: `None != <anything>` is always true, so the first chunk of
+every turn now announces correctly whether or not its generation is new.
+
+**Alternatives considered:** tracking a separate per-turn identifier instead of reusing
+`generation`, rejected as solving a problem `_begin_answering` already has a clean answer
+to. Comparing against `self._turn_index` instead of `chunk.generation`, rejected because
+`_send_audio` only has the chunk's generation to work with, and threading the turn index
+through `AudioChunk` as well is a wider change for the same fix.
+
+**Consequences:** every reply after the first one in an otherwise ordinary conversation
+was very likely reaching the client with no `AUDIO_START`, which is a strong candidate
+for why some live sessions have gone quiet after the first exchange with no error logged
+anywhere: nothing failed, the message that tells the browser to expect audio just never
+went out for a generation it had already announced once. No test caught it before this,
+which is itself the finding worth keeping: this project's own suite had never once driven
+a session past its first turn while checking what the client would actually have seen.
+
+## 2026-08-17: The turn and vad.endpoint spans are backdated to the frame that made them true, not the frame that noticed it
+
+**Context:** `bench/waterfall.py` needs real Spanlight spans to read, and M1.6's own
+account of itself did not match the code: only four of seven declared spans were ever
+actually emitted (`stt.stream`, `stt.request`, `llm.generate`, `tts.synthesize`).
+`vad.endpoint` and `turn`, including the headline span this whole project's Proof
+Artifact is measured against, existed only in `spans.py`'s CONTRACT and in
+`bench/stages.md`'s prose. A waterfall built around that would have had no turn column.
+
+**Decision:** `Endpointer` gained `speech_began_ns`, set on the first frame each
+listening period that clears the speech threshold, `time.time_ns` rather than
+`time.monotonic_ns` because `stage_span`'s `start_time` parameter is read by the same
+clock OpenTelemetry itself uses to close a span, and the two clocks drift apart from
+each other over a long-running process. `vad.endpoint` is emitted the instant `accept`
+returns true, as a context manager entered and exited in the same statement, since both
+of its boundaries are already in the past by the time anything can act on the true
+result. `turn` shares the same start and is emitted once playback actually begins,
+carried between the two points in `_begin_answering` and `_send_audio` by a small
+`PendingTurnSpan` value rather than three loose attributes on `self` that would have to
+be kept in step by hand.
+
+`turn` has one case with nothing to backdate from: a verified interruption's audio is
+written directly into the frame queue in `_interrupt`, bypassing `accept` entirely, so
+the endpointer never saw it and `speech_began_ns` stays `None`. That turn's span is
+skipped, logged, and not fabricated from a nearby timestamp. `playback.first_audio`
+stays entirely unemitted, for the reason M1.6's own entry already gave and never
+resolved: it is supposed to close on a browser acknowledgement the client does not send,
+the same gap blocking M2.15's spoken half, and a span invented to have a plausible
+zero-ish duration would be worse than one honestly missing.
+
+**Alternatives considered:** deriving `turn` and `vad.endpoint`'s timing by re-reading
+`TurnClock`, which already backdates to the last frame of speech, rejected because
+`turn`'s own definition in `bench/stages.md` starts at the *first* frame, not the last,
+and reusing a clock built for a different boundary would have quietly measured the wrong
+thing while looking correct. Fabricating a `turn` start for the verified-interruption
+case from `BargeClock`, which does have a valid backdated start, rejected as a
+monotonic-to-wall-clock conversion whose correctness depends on the process never
+adjusting its own clock mid-session, a caveat real enough that `Interactivity` already
+carries a version of it; skipping the span is the version of this decision that does not
+need to trust that.
+
+**Consequences:** five new tests in `tests/vaani/test_session.py` prove both spans
+against a running session rather than only against the contract: one ordinary turn, a
+second turn's index incrementing, a turn restarted by an explicit `START` correctly
+marking `vaani.turn.interrupted`, and a verified interruption's turn span confirmed
+absent rather than merely unchecked. Building the second-turn test is what found the
+`_announced` bug recorded separately above; the span work and that fix are effectively
+one session's worth of the same investigation.
+
 ## 2026-08-17: A quiet caller gets told the mic looks fine, in text, and the spoken version is deliberately not built tonight
 
 **Context:** M2.15 asks for Bolna's check-in message after extended silence, distinct from
