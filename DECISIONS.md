@@ -12,6 +12,48 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: The fixed corpus is synthesised, stated as a limitation, not passed off as recorded
+
+**Context:** M4.2 and SPEC A8 both ask for the same thing: twenty fixed utterances, used
+unchanged across every measured configuration, so a difference in the numbers cannot be
+a difference in what was said. The backlog's own wording says "recorded." Nobody with a
+microphone was available to produce that, and waiting on one would have blocked every
+downstream measurement item, M4.3 through M5, on a step with no code in it at all.
+
+**Decision:** `scripts/build_corpus.py` synthesises twenty utterances through the same
+`EdgeTts` class the pipeline already uses for its own answers, decodes the MP3 output to
+16kHz mono PCM16 with `miniaudio`, and writes both the WAV files and a manifest (id,
+text, category, duration, filename) that `bench/waterfall.py` and anything after it read
+rather than re-deriving. Verified against live Groq Whisper on a sample, not assumed: the
+transcript comes back transliterated into Devanagari rather than matching the Romanised
+input byte for byte, which is expected and is not the property being checked; the
+meaning read back matched every sample.
+
+`miniaudio` is a new dependency, added deliberately narrowly: a wheel-distributed MP3
+decoder with no system binary, chosen after finding an `ffmpeg.exe` on this machine that
+could have done the same conversion and rejecting it, because that binary came from an
+unrelated LAMMPS installation rather than anything this project declares, and a corpus
+that only rebuilds on this one machine is not a fixed corpus, it is a fixed corpus here.
+
+**Alternatives considered:** waiting for a real recording session, rejected as blocking
+the entire measurement milestone on a step that has no code and no clear date. Using
+`pydub`, which also needs `ffmpeg` present on the machine running it, rejected for the
+same non-reproducibility reason the found `ffmpeg.exe` was. Sourcing utterances from a
+public Hindi speech dataset, rejected because those are not shaped to this project's
+scenario classes, PM-KISAN and Ayushman Bharat by name are not going to appear in a
+general-purpose corpus, and reshaping one would cost more than synthesising twenty
+sentences purpose-written for this.
+
+**Consequences:** every number `bench/waterfall.py` publishes from this corpus is
+latency, not recognition accuracy, and has to be reported as such. A synthesised corpus
+cannot say anything honest about disfluency, background noise, accent variation, or
+microphone distance, because it has none of those; a claim that this project's numbers
+generalise to real callers is not supported by this corpus alone and any report using it
+has to say so rather than let the number imply otherwise. Recorded human speech, twenty
+utterances hand-collected, is still the better version of M4.2 and is not what this is;
+it is what made the other nine measurement items able to start tonight instead of
+waiting on it.
+
 ## 2026-08-17: An explicit START while the agent is speaking now orders itself like every other interrupt
 
 **Context:** found in the same pass as the two entries below, while a test for the new

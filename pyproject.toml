@@ -44,6 +44,7 @@ dev = [
     # published reference runs in CI. It needs no model file, and it is the one part of
     # the smart-turn arm that can be wrong while every other test stays green.
     "numpy>=2.0",
+    "miniaudio>=1.71",
 ]
 
 [tool.uv]

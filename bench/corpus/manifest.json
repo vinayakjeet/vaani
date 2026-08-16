@@ -1,0 +1,142 @@
+[
+  {
+    "id": "scheme-pm-kisan",
+    "text": "Mujhe kisan hoon, PM Kisan yojana ke baare mein bataiye.",
+    "category": "scheme",
+    "duration_s": 5.304,
+    "file": "scheme-pm-kisan.wav"
+  },
+  {
+    "id": "scheme-pm-jay",
+    "text": "Mera ilaj ke liye paisa nahi hai, Ayushman Bharat se madad mil sakti hai kya?",
+    "category": "scheme",
+    "duration_s": 6.384,
+    "file": "scheme-pm-jay.wav"
+  },
+  {
+    "id": "scheme-pmay-g",
+    "text": "Hamara apna ghar nahi hai, PM Awas Yojana ke liye eligible hoon kya?",
+    "category": "scheme",
+    "duration_s": 5.856,
+    "file": "scheme-pmay-g.wav"
+  },
+  {
+    "id": "scheme-ujjwala",
+    "text": "Ujjwala yojana mein gas cylinder kaise milega, mujhe batao.",
+    "category": "scheme",
+    "duration_s": 5.352,
+    "file": "scheme-ujjwala.wav"
+  },
+  {
+    "id": "scheme-nsap-oap",
+    "text": "Mere dada ji budhapa pension ke liye apply karna chahte hain, kya karna hoga?",
+    "category": "scheme",
+    "duration_s": 6.144,
+    "file": "scheme-nsap-oap.wav"
+  },
+  {
+    "id": "eligibility-income-words",
+    "text": "Meri saalana aay pachaas hazar rupaye hai aur do acre zameen hai, kya main PM Kisan ke liye eligible hoon?",
+    "category": "numeral",
+    "duration_s": 8.52,
+    "file": "eligibility-income-words.wav"
+  },
+  {
+    "id": "eligibility-income-digits",
+    "text": "Mera income 3 lakh rupaye per year hai, PM Awas Yojana mil sakta hai kya?",
+    "category": "numeral",
+    "duration_s": 6.408,
+    "file": "eligibility-income-digits.wav"
+  },
+  {
+    "id": "eligibility-land",
+    "text": "Humare paas saade teen acre zameen hai, ye kisan yojana ke liye theek hai?",
+    "category": "numeral",
+    "duration_s": 6.096,
+    "file": "eligibility-land.wav"
+  },
+  {
+    "id": "find-schemes-health",
+    "text": "Ghar mein koi bimar hai, kaunsi sarkari yojana se ilaj ho sakta hai?",
+    "category": "scheme",
+    "duration_s": 5.664,
+    "file": "find-schemes-health.wav"
+  },
+  {
+    "id": "find-schemes-general",
+    "text": "Mujhe nahi pata kaunsi sarkari yojana meri madad kar sakti hai, kuch bataiye.",
+    "category": "scheme",
+    "duration_s": 6.336,
+    "file": "find-schemes-general.wav"
+  },
+  {
+    "id": "out-of-scope-scholarship",
+    "text": "Mere bete ke liye scholarship yojana ke baare mein bataiye.",
+    "category": "out_of_scope",
+    "duration_s": 4.776,
+    "file": "out-of-scope-scholarship.wav"
+  },
+  {
+    "id": "out-of-scope-loan",
+    "text": "Business loan ke liye sarkari yojana kaunsi hai?",
+    "category": "out_of_scope",
+    "duration_s": 4.176,
+    "file": "out-of-scope-loan.wav"
+  },
+  {
+    "id": "short-yes",
+    "text": "Haan.",
+    "category": "short",
+    "duration_s": 1.776,
+    "file": "short-yes.wav"
+  },
+  {
+    "id": "short-ok",
+    "text": "Theek hai, samajh gaya.",
+    "category": "short",
+    "duration_s": 2.688,
+    "file": "short-ok.wav"
+  },
+  {
+    "id": "code-switch-status",
+    "text": "Mera application status check karna hai, PM Kisan ka payment kab aayega?",
+    "category": "code_switch",
+    "duration_s": 6.024,
+    "file": "code-switch-status.wav"
+  },
+  {
+    "id": "code-switch-documents",
+    "text": "Documents mein Aadhaar card aur bank account details chahiye kya?",
+    "category": "code_switch",
+    "duration_s": 5.4,
+    "file": "code-switch-documents.wav"
+  },
+  {
+    "id": "code-switch-online",
+    "text": "Online form fill kar sakte hain ya office jaana padega registration ke liye?",
+    "category": "code_switch",
+    "duration_s": 5.592,
+    "file": "code-switch-online.wav"
+  },
+  {
+    "id": "devanagari-kisan",
+    "text": "मुझे पीएम किसान योजना के बारे में जानकारी चाहिए, मैं किसान हूं।",
+    "category": "scheme",
+    "duration_s": 6.36,
+    "file": "devanagari-kisan.wav"
+  },
+  {
+    "id": "devanagari-pension",
+    "text": "मेरी दादी की उम्र सत्तर साल है, क्या उन्हें वृद्धावस्था पेंशन मिल सकती है?",
+    "category": "scheme",
+    "duration_s": 6.528,
+    "file": "devanagari-pension.wav"
+  },
+  {
+    "id": "negative-not-eligible",
+    "text": "Meri income das lakh rupaye hai, phir bhi Ujjwala yojana mil sakti hai kya?",
+    "category": "numeral",
+    "duration_s": 6.048,
+    "file": "negative-not-eligible.wav"
+  }
+]
