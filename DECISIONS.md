@@ -12,6 +12,141 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: An unanswered user turn is merged with what follows, not left as a second question
+
+**Context:** live testing kept producing replies that answered only half of what was
+asked. Traced to `Conversation`'s own invariant rather than guessed at: `messages`
+alternates user and assistant roles by construction once a turn is actually answered,
+because every path that commits or truncates a reply (`commit`, `truncate` in
+`vaani/history.py`) appends an assistant message right after the user's. So two user
+messages appearing in a row can only mean the first one never got any reply recorded at
+all, which happens when an interrupt lands before the model ever staged a sentence, or
+after it staged one but before any of its audio went out (`truncate` drops that case
+too, per the guard already in place). A user cut off mid-thought who then keeps talking
+produces exactly this: the first half sits in history unanswered, the second half arrives
+as what looks like a fresh, unrelated question, and the model reads them as two separate
+things rather than one continued one.
+
+This is Bolna's `pop_and_merge_user`, and the backlog had already named it as owed
+(M1.17) before tonight's testing made it visible.
+
+**Decision:** `user_said` now checks whether the previous message is a bare, unanswered
+user turn, and if so replaces it with the two texts joined rather than appending a second
+one. The existing overlap check (a reused STT partial and the final that follows it
+sharing a prefix) runs first and is unchanged; this is the case where the second
+transcript does not extend the first, it continues it.
+
+**Alternatives considered:** popping the old message and inserting a merged one, closer
+to Bolna's literal mechanism, rejected as equivalent in this record's append-only shape
+and more code for the same result: `messages[-1] = ...` is the pop and the insert in one
+step. Requiring the caller to say explicitly whether a transcript is a continuation,
+rejected because the caller (`vaani/session.py`) has no better signal than the record
+already has: the alternation invariant is the signal, and asking for a second one invites
+the two disagreeing.
+
+**Consequences:** an existing test's fixture predated this and could not tell a
+genuinely new follow-up question apart from an interrupted one, because it called
+`user_said` twice with nothing between them, which is indistinguishable from the bug at
+the object's own invariant. Rewritten to commit a real reply between the two calls,
+which is what makes the two cases look different. Two new tests cover the merge itself,
+including the dropped-not-committed path, so both ways an assistant message can fail to
+appear are exercised rather than only the more obvious one.
+
+## 2026-08-17: A tool call written as prose is filtered out of the reply, not swallowed with it
+
+**Context:** verifying the earlier tool-schema fixes against live Groq, one run in five
+produced a reply with the model's own tool-call syntax embedded in it as ordinary text:
+`"...eligibility check karne ke liye, <function=check_eligibility>{"applicant":
+{"annual_income_inr":"50000"}}</function> ka use karna hoga."` Groq's structured
+`tool_calls` mechanism has a known failure mode where Llama writes the call inline in
+`delta.content` instead, and nothing in `_events` treats that differently from real
+reply text: it would have been synthesised and spoken verbatim, unpronounceable syntax
+and an applicant's own income both included.
+
+The marker cannot be matched against one chunk at a time. Groq streams text a handful of
+characters per delta, so `<function=` arrives split across chunk boundaries in
+production, and a check that only looked at each chunk in isolation would miss it on
+exactly the boundary a fixed test fixture would not, by luck, ever reproduce.
+
+**Decision:** `ToolCallLeakFilter` in `vaani/llm_turn.py`, a small streaming state
+machine fed one chunk at a time. It holds back only the shortest suffix that could still
+become the marker's prefix, releases everything else immediately, and once the marker is
+confirmed, buffers and discards up to the matching close tag rather than the rest of the
+round. Real prose before and after the tag survives; only the tag and its payload are
+removed. A leak that never closes, the round ending mid-tag, is dropped entirely on
+`flush` rather than spoken as a truncated fragment.
+
+**Alternatives considered:** degrading the whole turn to `COULD_NOT_CHECK`, the path
+`M3.10`'s acceptance line originally described and the same one an uncaught
+`ProviderClientError` now takes. Rejected once the live example was in hand: it had real,
+useful reply text on both sides of the leaked tag, and discarding all of it over one
+provider-side formatting slip trades a mostly-working answer for a canned apology.
+Matching against the whole accumulated response text at the end of the round rather than
+streaming, rejected because it delays every chunk in the round behind the last one,
+which defeats first-sentence flush for every reply, leaked or not, to guard against a
+leak that occurs in roughly one call in five.
+
+**Consequences:** the filter is per round, discarded and rebuilt fresh each time,
+because a leak is confined to the text one round produced and carrying state across
+rounds would buy nothing. Tested against every possible chunk width from one character
+to the whole string on the real leaked text, not a hand-picked split, plus a round trip
+through `StreamedTurn.run` itself so the wiring is proven, not only the class in
+isolation.
+
+## 2026-08-17: A dead connection now releases the one-at-a-time lock instead of holding it until the process is restarted
+
+**Context:** live testing hit "busy: One session at a time on the free tier" on every
+attempt, on a freshly restarted process, within two seconds of startup, before any
+legitimate traffic could plausibly have arrived. Traced through Render's logs: 22
+WebSocket connections opened over three hours with zero recorded closes. `_in_session`
+in `app/routers/voice.py` is a bare `asyncio.Lock` held for the duration of
+`session.run()`, and `VoiceSession.run()`'s receive loop awaits `Transport.receive()`
+with no bound. A connection that never sends a clean close, a dropped link, a frozen
+tab, a laptop put to sleep, leaves that await pending for as long as the underlying
+socket takes to notice, which is governed by the OS's own TCP timeout rather than
+anything this process controls. One such connection holds the lock indefinitely, and
+every visitor after it is told the service is busy until somebody restarts the process
+by hand, which is what tonight's testing needed twice.
+
+**Decision:** `VoiceSession._receive_or_give_up` wraps the transport's `receive()` in
+`asyncio.wait_for` at `IDLE_RECEIVE_TIMEOUT_S`, twenty seconds, and a timeout is treated
+exactly like a disconnect: `run`'s existing `finally` clause already abandons a
+half-finished turn and returns, which releases `_in_session` the same way a clean close
+does. Twenty seconds is safe rather than tight: a genuinely connected, listening client
+is never silent this long, because the browser's `AudioWorklet` forwards a frame every
+20ms for as long as the tab is capturing, mid-answer included, since barge-in detection
+depends on that same stream continuing to arrive during playback. Going quiet for a
+thousand times that interval is not a pause, it is an absence.
+
+**Alternatives considered:** putting the timeout in `SocketTransport.receive()` instead,
+which is Starlette-specific and would need a new fake-socket test harness; the session
+level reuses the existing `FakeTransport` fixture and applies to any transport
+implementation, not only the real one. A lease with a heartbeat the client renews,
+rejected as more protocol for the same outcome: the existing frame stream already is a
+heartbeat, twenty milliseconds at a time, and nothing else needs to be invented to read
+it as one.
+
+**Consequences:** `M3.6`'s own acceptance criterion is about the client's reconnect
+experience and is not fully met by this; what changed is that the server side of a dead
+connection now heals itself rather than requiring intervention. `M3.8`'s "busy" refusal
+already worked as designed and had no test exercising the liveness gap, because nothing
+in that milestone's acceptance asked for one; this was found by running the live
+service, not by a test that was owed and missing.
+
+Wrapping every `receive()` in `asyncio.wait_for` shifts scheduling enough that it also
+surfaced a real, pre-existing race in
+`test_the_interrupting_audio_starts_the_turn_it_caused`: `_interrupt` sets
+`interrupted_previous` before it awaits `_stop_speaking`, and the carried-over frames are
+only queued after that await completes, so a check gated on the flag alone can sample the
+queue in the gap between the two. Measured before concluding anything: 8 clean runs of
+that one test with the wrapper removed, flakes reintroduced the moment it went back.
+Fixed at the test, which now waits for the frames themselves rather than a precondition
+that can be true slightly before they are, confirmed clean over 20 repeats and three full
+suite runs. The lesson is not really about this one test: a change to scheduling can turn
+a latent race already sitting in the suite into a failure that looks like it belongs to
+the change, and the fix belongs wherever the actual race is, which examining the failure
+rather than reverting on sight is what found.
+
 ## 2026-08-16: The chunked STT interval moves from 400ms to 600ms, measured against live Groq rather than reasoned about
 
 **Context:** a live test reported "very very high latency." Pulled the actual session from

@@ -43,6 +43,85 @@ COULD_NOT_CHECK = (
     "Main aapki eligibility check nahi kar paaya. Kripya thodi der baad koshish kijiye."
 )
 
+# The tag Groq's Llama models write when they put a tool call in prose instead of a
+# structured `tool_calls` delta. Seen live: "...eligibility check karne ke liye,
+# <function=check_eligibility>{"applicant":{"annual_income_inr":"50000",...}}</function>
+# ka use karna hoga." The surrounding Hindi is a real reply and stays; the tag and
+# everything inside it is a defect in the model's own streaming format and must never
+# reach a synthesiser, both because it is unpronounceable and because it can carry an
+# applicant's own figures inside it.
+LEAK_OPEN = "<function="
+LEAK_CLOSE = "</function>"
+
+
+class ToolCallLeakFilter:
+    """Strips a tool call the model wrote as prose out of the text stream around it.
+
+    Feed it in the order the model wrote it, get back only the words a listener should
+    hear. Its whole reason to exist is that `LEAK_OPEN` arrives a few characters per
+    chunk, not as one string: Groq streams text a handful of characters at a time, so
+    a check against each chunk in isolation never sees the marker.
+
+    A small suffix of confirmed-safe text is always held back rather than yielded
+    immediately, exactly as many characters as `LEAK_OPEN` needs to rule itself out.
+    Releasing text the moment it arrives would mean releasing the first half of the
+    marker before the second half proves what it was.
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._inside_leak = False
+
+    def feed(self, piece: str) -> str:
+        self._pending += piece
+        safe = ""
+
+        while True:
+            if self._inside_leak:
+                end = self._pending.find(LEAK_CLOSE)
+                if end == -1:
+                    return safe
+                # The leak and its payload, gone. What follows the tag in the same
+                # chunk is ordinary text again, and the loop re-examines it below
+                # rather than assuming nothing else is in the buffer.
+                self._pending = self._pending[end + len(LEAK_CLOSE) :]
+                self._inside_leak = False
+                continue
+
+            start = self._pending.find(LEAK_OPEN)
+            if start != -1:
+                safe += self._pending[:start]
+                self._pending = self._pending[start:]
+                self._inside_leak = True
+                continue
+
+            # No marker in the buffer. Held back is only the tail that could still
+            # become one: a chunk boundary landing mid-marker must not have already
+            # released the prefix that would prove it.
+            hold = len(LEAK_OPEN) - 1
+            if len(self._pending) > hold:
+                cut = len(self._pending) - hold
+                safe += self._pending[:cut]
+                self._pending = self._pending[cut:]
+            return safe
+
+    def flush(self) -> str:
+        """Whatever the round ends holding. Called once the stream is known to be done.
+
+        Text held back because it merely resembled the marker's prefix is released,
+        since the round is over and it never became one. Text confirmed to be inside
+        an unclosed leak is dropped rather than spoken: the tag never closed, so the
+        payload is truncated, and a truncated JSON fragment read aloud is worse than
+        the words it interrupted going missing.
+        """
+        if self._inside_leak:
+            logger.warning("turn.tool_call_leak_unclosed", chars=len(self._pending))
+            self._inside_leak = False
+            self._pending = ""
+            return ""
+        text, self._pending = self._pending, ""
+        return text
+
 
 class StreamedTurn:
     """A question in, a stream of reply text out, tools resolved on the way."""
@@ -104,6 +183,10 @@ class StreamedTurn:
 
         for round_index in range(self._max_tool_rounds + 1):
             requested: list[ToolCall] = []
+            # Fresh per round: a leak, if the model writes one, is confined to the
+            # text this round produced, and each round is an independent sample from
+            # the model regardless of what a previous round did.
+            leak_filter = ToolCallLeakFilter()
 
             try:
                 async for event in self._llm.stream(
@@ -121,7 +204,8 @@ class StreamedTurn:
                                         * 1000
                                     }
                                 )
-                            yield event.text
+                            if safe := leak_filter.feed(event.text):
+                                yield safe
                         case ToolCallsRequested():
                             requested = event.calls
                         case StreamCompleted():
@@ -154,6 +238,12 @@ class StreamedTurn:
                 stage.record(**{"vaani.llm.rounds": round_index + 1})
                 yield COULD_NOT_CHECK
                 return
+
+            # Whatever the round's stream ended holding: text kept back on the chance
+            # it was the start of a leaked tag, released now that the round is over
+            # and it never became one.
+            if trailing := leak_filter.flush():
+                yield trailing
 
             if not requested:
                 stage.record(**{"vaani.llm.rounds": round_index + 1})

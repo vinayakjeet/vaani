@@ -22,8 +22,8 @@ characters, trimmed back to a word boundary. Characters proportional to time is 
 model of speech and it is obviously better than the two alternatives, which are keeping
 the whole sentence and dropping it entirely.
 
-**Four guards, each of which is a bug we would otherwise ship**, three read off Bolna and
-one that falls out of our own shape:
+**Five guards, each of which is a bug we would otherwise ship**, three read off Bolna and
+two that fall out of our own shape:
 
 - Refuse to trim without evidence. A cleanup that finds nothing queued must leave the
   record alone rather than truncate the last committed message, or a second interruption
@@ -35,6 +35,11 @@ one that falls out of our own shape:
   which would push the estimate past the end.
 - A turn with no audio at all is dropped, not committed empty. An empty assistant message
   is not the same as no message, and models treat it as a refusal.
+- A question interrupted before any reply was staged is merged with whatever the caller
+  says next, not recorded as a second question. The record alternates roles by
+  construction once a turn is answered, so two user messages in a row can only mean the
+  first was not, and the model needs the two halves as one thought, not two questions in
+  a row it never answered the first of.
 """
 
 from __future__ import annotations
@@ -81,16 +86,27 @@ class Conversation:
         text = text.strip()
         if not text:
             return
-        # A transcript that extends the previous one is the same utterance, not a new
-        # one. Ours does this by construction: a reused partial and the final that
-        # follows it share a prefix, and two user messages where the second contains the
-        # first reads to the model as the question being asked twice.
         if self.messages and self.messages[-1].role == "user":
             previous = (self.messages[-1].content or "").strip()
+            # A transcript that extends the previous one is the same utterance, not a
+            # new one. Ours does this by construction: a reused partial and the final
+            # that follows it share a prefix, and two user messages where the second
+            # contains the first reads to the model as the question being asked twice.
             if text.startswith(previous):
                 logger.info("history.collapsed_overlapping_user")
                 self.messages[-1] = ChatMessage(role="user", content=text)
                 return
+            # Two user messages in a row with no overlap can only mean the first one
+            # never got a reply: every path that answers a turn, whole or truncated,
+            # appends an assistant message right after it, so the record alternates by
+            # construction unless that never happened. That is a turn interrupted
+            # before the model staged anything, not a second question, so the second
+            # transcript is the rest of the first one rather than a fresh message.
+            # Bolna's `pop_and_merge_user`; here the record has nothing to pop, only
+            # to replace with the two halves joined.
+            logger.info("history.merged_unanswered_user")
+            self.messages[-1] = ChatMessage(role="user", content=f"{previous} {text}")
+            return
         self.messages.append(ChatMessage(role="user", content=text))
         self._trim()
 

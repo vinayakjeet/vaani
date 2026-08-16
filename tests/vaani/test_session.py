@@ -341,11 +341,21 @@ async def test_the_interrupting_audio_starts_the_turn_it_caused() -> None:
         delay=0.02,
     )
 
+    def carried() -> bool:
+        return voice._frames is not None and voice._frames.qsize() > 0
+
     task = await run_until_audio(voice, transport)
-    await asyncio.wait_for(_until(lambda: voice._state.interrupted_previous), 2.0)
+    # Waited for directly, not sampled once after a weaker precondition.
+    # `_interrupt` sets `interrupted_previous` before it awaits `_stop_speaking`, and
+    # the frames are only queued after that await completes, so a check gated on the
+    # flag alone can land in the real gap between the two and read an empty queue that
+    # was never going to stay empty. This flaked on a machine busy enough to widen
+    # that gap, and it was the test racing its own assertion, not the code being wrong.
+    await asyncio.wait_for(_until(carried), 2.0)
     frames_carried = voice._frames.qsize() if voice._frames is not None else 0
     await stop(task)
 
+    assert voice._state.interrupted_previous
     assert frames_carried > 0
 
 
@@ -385,6 +395,26 @@ async def test_stop_ends_the_session() -> None:
     await asyncio.wait_for(voice.run(), timeout=2.0)
 
     assert transport.kinds() == [ServerMessage.READY]
+
+
+async def test_an_idle_connection_eventually_gives_up(monkeypatch) -> None:
+    """A connection can go quiet without ever sending a clean disconnect: a dropped
+    link, a frozen tab, a laptop put to sleep. Left alone, `receive()` would await a
+    socket that is never producing another message, indistinguishable from a client
+    who is merely quiet, and the one-at-a-time lock in `app/routers/voice.py` would
+    stay held until the process is restarted by hand. Found live: exactly this held a
+    demo unusable for every visitor after the first stuck one.
+
+    The bound has to be on the wait itself, not on a per-turn timer, because a session
+    between utterances is legitimately waiting on `receive()` for as long as the
+    visitor takes to speak again."""
+    monkeypatch.setattr(session_module, "IDLE_RECEIVE_TIMEOUT_S", 0.05)
+    voice, transport = session()
+
+    await asyncio.wait_for(voice.run(), timeout=2.0)
+
+    assert ServerMessage.READY in transport.kinds()
+    assert voice._speaking is None
 
 
 async def test_a_disconnect_abandons_the_turn_rather_than_finishing_it() -> None:

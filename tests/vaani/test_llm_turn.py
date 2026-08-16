@@ -14,7 +14,7 @@ from llm.types import (
     ToolCall,
     ToolCallsRequested,
 )
-from vaani.llm_turn import COULD_NOT_CHECK, StreamedTurn
+from vaani.llm_turn import COULD_NOT_CHECK, StreamedTurn, ToolCallLeakFilter
 
 
 class ScriptedClient:
@@ -266,3 +266,86 @@ async def test_a_scripted_stream_that_runs_out_is_an_error_not_a_pass() -> None:
 
     with pytest.raises(AssertionError):
         await collect(streamed.run("ghar"))
+
+
+def feed_all(leaked: ToolCallLeakFilter, text: str, width: int) -> str:
+    """Feed a string a few characters at a time, the shape Groq actually streams in.
+
+    A test that fed the whole leaked tag as one chunk would pass against a filter that
+    only ever checked one chunk in isolation, which is the exact bug this class exists
+    to not have: `LEAK_OPEN` arrives split across chunk boundaries in production.
+    """
+    out = ""
+    for start in range(0, len(text), width):
+        out += leaked.feed(text[start : start + width])
+    return out
+
+
+async def test_a_leaked_tool_call_is_removed_and_the_prose_around_it_survives() -> None:
+    """The exact shape found live: real Hindi before the tag, real Hindi after it, and
+    the tag itself unpronounceable and carrying an applicant's own figures."""
+    leaked = ToolCallLeakFilter()
+    text = (
+        'karne ke liye, <function=check_eligibility>{"annual_income_inr":"50000"}'
+        "</function> ka use karna hoga."
+    )
+
+    out = feed_all(leaked, text, width=3) + leaked.flush()
+
+    assert out == "karne ke liye,  ka use karna hoga."
+    assert "function" not in out
+    assert "50000" not in out
+
+
+async def test_the_marker_is_still_caught_split_across_every_possible_boundary() -> None:
+    """`<function=` is ten characters. A filter that only checked whole-chunk contents
+    would miss it whenever a chunk boundary landed inside those ten, which streaming
+    text does constantly and a fixed test fixture would not, by luck, ever reproduce."""
+    text = '<function=x>{}</function>after'
+    for width in range(1, len(text) + 1):
+        leaked = ToolCallLeakFilter()
+        out = feed_all(leaked, text, width) + leaked.flush()
+        assert out == "after", f"leaked at width={width}: {out!r}"
+
+
+async def test_an_unclosed_leak_is_dropped_rather_than_spoken_half_finished() -> None:
+    """The round ends mid-tag: truncated by the round budget, or the model simply
+    stopped. A half-written function call is not a sentence with a typo in it, and
+    reading its fragment of JSON aloud is worse than the silence in its place."""
+    leaked = ToolCallLeakFilter()
+    out = feed_all(leaked, 'before <function=check_eligibility>{"annual', width=4)
+
+    assert out == "before "
+    assert leaked.flush() == ""
+
+
+async def test_text_that_merely_resembles_the_marker_is_not_held_forever() -> None:
+    """Held back only long enough to be ruled out. `flush` releases it once the round
+    is known to be over, so a reply that happens to contain a stray `<` is not silently
+    truncated by a filter built for a different problem."""
+    leaked = ToolCallLeakFilter()
+    out = feed_all(leaked, "5 < 10, so aap eligible hain", width=5)
+
+    assert out + leaked.flush() == "5 < 10, so aap eligible hain"
+
+
+async def test_a_leaked_call_never_reaches_the_turns_output() -> None:
+    """The integration point, not only the unit. `StreamedTurn.run` is what actually
+    faces a live model, and this proves the filter is wired into it rather than sitting
+    beside it unused."""
+    leaking = [TextChunk(text=piece) for piece in _chunks(
+        'Aapki eligibility check karne ke liye, <function=check_eligibility>'
+        '{"applicant":{"annual_income_inr":"50000"}}</function> ka use karna hoga.',
+        width=6,
+    )] + [StreamCompleted(finish_reason="stop")]
+    streamed, _ = turn(leaking)
+
+    reply = await collect(streamed.run("kya main eligible hoon"))
+
+    assert "function" not in reply
+    assert "50000" not in reply
+    assert reply == "Aapki eligibility check karne ke liye,  ka use karna hoga."
+
+
+def _chunks(text: str, width: int) -> list[str]:
+    return [text[start : start + width] for start in range(0, len(text), width)]

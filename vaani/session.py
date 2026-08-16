@@ -55,6 +55,21 @@ SAFE_TO_LOG = (ProviderError, SttError, TtsError)
 # also 3.0 seconds, arrived at independently.
 STUCK_HOLD_S = 3.0
 
+# How long a connected client may go without sending anything at all before the session
+# gives up on it and releases the one-at-a-time lock in `app/routers/voice.py`.
+#
+# Found live: a connection that never sends a clean close, whether a dropped wifi link, a
+# frozen tab, or a laptop put to sleep, leaves `receive()` awaiting a socket that will not
+# produce another message for a long time, bounded by the OS's own TCP timeout rather than
+# anything this process controls. `_in_session` is then held until the process is restarted
+# by hand, and every visitor after the first one is told the service is busy, forever.
+#
+# Twenty seconds is safe rather than tight, because a listening client is never legitimately
+# silent this long: the AudioWorklet forwards a frame every 20ms for as long as the tab is
+# capturing, mid-answer included, since barge-in depends on that same stream. A frame every
+# 20ms going quiet for twenty full seconds is not a pause, it is an absence.
+IDLE_RECEIVE_TIMEOUT_S = 20.0
+
 
 @dataclass(frozen=True)
 class Incoming:
@@ -159,7 +174,7 @@ class VoiceSession:
         await self._say({"type": ServerMessage.READY})
         try:
             while True:
-                message = await self._transport.receive()
+                message = await self._receive_or_give_up()
                 if message.disconnected:
                     return
                 if message.control is not None:
@@ -172,6 +187,24 @@ class VoiceSession:
             # disconnect rule, and also what keeps a dropped tab from holding a
             # provider stream open on a free instance.
             await self._stop_speaking()
+
+    async def _receive_or_give_up(self) -> Incoming:
+        """Wait for the transport, but not forever.
+
+        A clean disconnect arrives as a message; a dead one, whether a dropped link,
+        a frozen tab, or a sleeping laptop, arrives as nothing at all, and awaiting a
+        socket that will not produce another message is indistinguishable from a
+        client that is merely quiet. So the wait itself is bounded, and going quiet
+        is treated the same as saying goodbye: `run`'s own `finally` already abandons
+        a half-finished turn and releases the one-at-a-time lock either way.
+        """
+        try:
+            return await asyncio.wait_for(
+                self._transport.receive(), timeout=IDLE_RECEIVE_TIMEOUT_S
+            )
+        except TimeoutError:
+            logger.info("session.idle_timeout", seconds=IDLE_RECEIVE_TIMEOUT_S)
+            return Incoming(disconnected=True)
 
     async def _on_control(self, control: str) -> bool:
         """Returns whether the session should end."""

@@ -1,4 +1,4 @@
-"""The conversation record, and the four guards that stop it lying about what was said.
+"""The conversation record, and the five guards that stop it lying about what was said.
 
 Every one of these is a bug that ships if the record is built first and truncation is
 added later, which is why it was built with them.
@@ -129,12 +129,56 @@ def test_a_final_transcript_that_extends_the_partial_replaces_it() -> None:
     assert content(record) == [("user", "meri aay 300000 hai")]
 
 
-def test_a_genuinely_new_utterance_is_not_collapsed() -> None:
+def test_a_genuinely_new_question_after_a_real_answer_is_not_merged() -> None:
+    """The record alternates roles once a turn is actually answered, so a fresh
+    question that follows a real reply is a fresh question, not a continuation.
+    Committing the first turn between the two calls is the part the old version of
+    this test skipped, and skipping it made the fixture indistinguishable from the
+    interrupted-turn case the merge exists to catch."""
     record = Conversation()
     record.user_said("mujhe ghar chahiye")
+    record.stage(1, "PM Awas Yojana dekhiye.")
+    record.commit(1)
     record.user_said("aur pension bhi")
 
-    assert len(content(record)) == 2
+    assert content(record) == [
+        ("user", "mujhe ghar chahiye"),
+        ("assistant", "PM Awas Yojana dekhiye."),
+        ("user", "aur pension bhi"),
+    ]
+
+
+def test_a_question_interrupted_before_any_reply_is_merged_with_what_follows() -> None:
+    """Bolna's `pop_and_merge_user`. Nothing was ever staged for this turn, so the
+    record has only the bare question when the next one arrives, and two user
+    messages in a row can only mean the first was never answered: not a second
+    question, the rest of the first one."""
+    record = Conversation()
+    record.user_said("mera annual income pachaas hazar hai aur")
+    record.user_said("do acre zameen hai")
+
+    assert content(record) == [
+        ("user", "mera annual income pachaas hazar hai aur do acre zameen hai")
+    ]
+
+
+def test_a_question_interrupted_after_a_dropped_reply_is_still_merged() -> None:
+    """The same case reached the other way: a reply was staged but its audio never
+    went out, so `truncate` dropped it rather than committing it (the guard two
+    tests up from here). The record still ends on a bare user message, and the
+    merge has to see through the drop rather than only through the empty case."""
+    record = Conversation()
+    record.user_said("mera annual income pachaas hazar hai aur")
+    record.stage(1, "Aap eligible hain.")
+    # No `note_audio` call: text was staged but no audio was ever queued for it, so
+    # `truncate` drops it rather than committing anything, the same as if nothing had
+    # been staged at all.
+    record.truncate(1, remaining_ms=0)
+    record.user_said("do acre zameen hai")
+
+    assert content(record) == [
+        ("user", "mera annual income pachaas hazar hai aur do acre zameen hai")
+    ]
 
 
 def test_the_record_is_bounded() -> None:
