@@ -29,7 +29,7 @@ import structlog
 
 from llm.types import ProviderError
 from vaani.barge_in import AudioChunk, SpeakingTurn
-from vaani.budget import TurnClock, speak_within
+from vaani.budget import BargeClock, TurnClock, speak_within
 from vaani.endpoint import Endpointer, MicState
 from vaani.history import Conversation
 from vaani.protocol import FRAME_BYTES, ClientMessage, Frame, ServerMessage
@@ -137,6 +137,15 @@ class VoiceSession:
         # The interruption currently under suspicion, if any. Held rather than acted on
         # until it is either long enough to be certain or identified by the recogniser.
         self._barge: PendingBarge | None = None
+        # That suspicion's clock, started at the frame the speech began on rather than
+        # at the frame we noticed it. Separate from `_barge` because it outlives the
+        # decision: the record is written when the suspicion is resolved, and resolving
+        # it is what clears the suspicion.
+        self._barge_clock: BargeClock | None = None
+        # Every resolved interruption this session, for M2.4. Kept rather than only
+        # logged, because a bench that had to parse its own log lines back would be
+        # measuring the logging.
+        self.barges: list[BargeClock] = []
         # What the latency numbers cannot see. Per session rather than per turn, because
         # every ratio in it is about a conversation rather than an utterance.
         self.quality = Interactivity()
@@ -232,6 +241,10 @@ class VoiceSession:
 
         if self._barge is None:
             self._barge = PendingBarge()
+            # Backdated to where the speech started, which is `min_speech_ms` before
+            # this frame. Detection cannot fire any sooner than that by construction, so
+            # a clock started here would report the whole mechanism as free.
+            self._barge_clock = BargeClock.from_speech(self._endpointer.speech_run_ms)
 
         match self._barge.note(frame.pcm, self._endpointer.speech_ms):
             case Barge.COMMIT:
@@ -243,6 +256,11 @@ class VoiceSession:
                 self._barge.paused = True
                 logger.info("session.barge_pending")
                 await self._say({"type": ServerMessage.PAUSE})
+                # After the send rather than before it. The client cannot act on a
+                # message still queued behind an audio chunk, and the lock this send
+                # takes is the queue.
+                if self._barge_clock is not None:
+                    self._barge_clock.mark_paused()
             case _:
                 pass
 
@@ -287,6 +305,7 @@ class VoiceSession:
         self.quality.user_stopped_speaking()
         self._endpointer.reset()
         await self._say({"type": ServerMessage.RESUME})
+        self._retire_barge_clock(lambda clock: clock.mark_resumed())
 
     async def _commit_barge(self, reason: str, *, complete: bool) -> None:
         """Turn a suspicion into an interruption, and start the turn it belongs to.
@@ -305,7 +324,7 @@ class VoiceSession:
         logger.info("session.interrupted", reason=reason, speech_ms=speech_ms)
         self.quality.interrupted(Interruption.USER_INTERRUPTED_AGENT)
 
-        await self._interrupt(heard=heard)
+        await self._interrupt(heard=heard, outcome=reason)
 
         if complete and self._frames is not None:
             self._frames.put_nowait(None)
@@ -446,12 +465,20 @@ class VoiceSession:
                 self.history.commit(speaking.generation)
                 self._state.to(State.LISTENING)
                 self._endpointer.reset()
+                # A suspicion the reply outlived, which the stuck-hold release makes
+                # reachable. Left in place it carries its accumulated audio and its
+                # `paused` flag into the next turn, so the next real interruption finds
+                # one already open and never sends its PAUSE. Found while giving the
+                # suspicion a clock: the clock made the leak a number rather than a
+                # state nothing reported.
+                self._barge = None
+                self._retire_barge_clock(lambda clock: clock.mark_unresolved())
             else:
                 self.quality.agent_stopped_speaking()
             await self._say({"type": ServerMessage.AUDIO_END})
             logger.info("session.quality", **self.quality.summary())
 
-    async def _interrupt(self, heard: bytes = b"") -> None:
+    async def _interrupt(self, heard: bytes = b"", outcome: str = "client") -> None:
         # The new turn is begun before the old one is stopped, and the order is the
         # whole correctness of this method.
         #
@@ -474,6 +501,12 @@ class VoiceSession:
         self._begin_listening()
         await self._stop_speaking()
 
+        # Here, because this is the line `bench/stages.md` names: the generation has
+        # moved and the in-flight generation and synthesis are stopped rather than
+        # merely asked to stop. Recording it at the request instead would report the
+        # interruption as complete while a synthesiser was still writing.
+        self._retire_barge_clock(lambda clock: clock.mark_committed(outcome))
+
         # The audio that proved this was an interruption, handed to the turn it started.
         # Without it the new turn begins from whatever arrives after the decision, so the
         # agent hears an interruption from its second word onward and answers a fragment.
@@ -482,6 +515,28 @@ class VoiceSession:
                 self._frames.put_nowait(heard[start : start + FRAME_BYTES])
 
         await self._say({"type": ServerMessage.READY})
+
+    def _retire_barge_clock(self, close: Callable[[BargeClock], None]) -> None:
+        """Close out a suspicion and keep what it cost.
+
+        One place, because there are three ways an interruption ends and a clock left
+        open by any of them is a barge-in that never appears in the numbers. That is the
+        empty-panel failure in miniature: the median improves because the slow cases
+        stopped being counted.
+        """
+        clock = self._barge_clock
+        if clock is None:
+            return
+        self._barge_clock = None
+        close(clock)
+        self.barges.append(clock)
+        logger.info(
+            "session.barge_latency",
+            outcome=clock.outcome,
+            server_paused_ms=_rounded(clock.server_paused_ms),
+            committed_ms=_rounded(clock.committed_ms),
+            resumed_ms=_rounded(clock.resumed_ms),
+        )
 
     async def _stop_speaking(self) -> None:
         if self._speaking is not None:
@@ -576,6 +631,10 @@ class VoiceSession:
     async def _say(self, payload: dict) -> None:
         async with self._send:
             await self._transport.send_json(payload)
+
+
+def _rounded(value: float | None) -> float | None:
+    return None if value is None else round(value, 1)
 
 
 async def _drain(queue: asyncio.Queue[bytes | None]) -> AsyncIterator[bytes]:

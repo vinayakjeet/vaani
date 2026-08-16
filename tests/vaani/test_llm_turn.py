@@ -7,6 +7,7 @@ import pytest
 
 from llm.types import (
     ChatMessage,
+    ProviderClientError,
     StreamCompleted,
     StreamEvent,
     TextChunk,
@@ -21,9 +22,14 @@ class ScriptedClient:
 
     Records the messages it was handed each time, because the tool round trip is
     mostly a claim about what the second request contains.
+
+    A round scripted as an exception instead of a list of events reproduces the
+    shape Groq actually sends when it cannot turn a model's own generation into a
+    tool call: nothing to fall through to `ToolCallsRequested`, the stream simply
+    ends by raising.
     """
 
-    def __init__(self, *rounds: list[StreamEvent]) -> None:
+    def __init__(self, *rounds: list[StreamEvent] | Exception) -> None:
         self._rounds = list(rounds)
         self.seen: list[list[ChatMessage]] = []
         self.kwargs: list[dict] = []
@@ -37,7 +43,11 @@ class ScriptedClient:
         if not self._rounds:
             raise AssertionError("the turn asked for more rounds than were scripted")
 
-        for event in self._rounds.pop(0):
+        round_ = self._rounds.pop(0)
+        if isinstance(round_, Exception):
+            raise round_
+
+        for event in round_:
             yield event
 
 
@@ -201,6 +211,21 @@ async def test_the_tool_loop_is_bounded_and_the_user_is_told() -> None:
 
     assert await collect(streamed.run("ghar")) == COULD_NOT_CHECK
     assert len(client.seen) == 3
+
+
+async def test_a_provider_that_cannot_parse_its_own_tool_call_degrades_gracefully() -> None:
+    """Groq can fail to turn a model's own generation into a structured call at all:
+    `tool_use_failed`, "Failed to call a function", raised before `ToolCallsRequested`
+    ever fires. There is no `tool_call_id` in that failure to attach a result to, so
+    it cannot be fed back for the model to correct the way an ordinary `ToolError`
+    round is. Left uncaught it propagates out of the whole turn, past every
+    degradation rule, to the session's generic playback handler, which a listener
+    hears as filler and then silence with no reason given. The turn has to end the
+    same tested way running out of rounds already does, not crash a new way."""
+    streamed, client = turn(ProviderClientError("groq: tool_use_failed: ..."))
+
+    assert await collect(streamed.run("kya main eligible hoon")) == COULD_NOT_CHECK
+    assert len(client.seen) == 1
 
 
 async def test_a_reply_needing_no_tools_makes_exactly_one_request() -> None:

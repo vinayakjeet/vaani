@@ -75,6 +75,20 @@ def test_an_unknown_scheme_is_refused_rather_than_guessed() -> None:
         check_eligibility({"scheme_id": "not-a-scheme", "applicant": applicant()})
 
 
+def test_an_unknown_scheme_names_the_ones_that_exist() -> None:
+    """The message is what the model reads to correct itself, within
+    `MAX_TOOL_ROUNDS`. Asked about a scheme by its name rather than its id, a live
+    model called this with `scheme_id="PM Kisan"`, got back only "no scheme with
+    id 'PM Kisan'", and had nothing in that sentence pointing at "pm-kisan": every
+    retry guessed again and the turn spent its whole budget landing on "I could
+    not check." Unrelated to `find_schemes` existing, since nothing forces a model
+    to call it first and this one did not."""
+    with pytest.raises(ToolError) as raised:
+        check_eligibility({"scheme_id": "PM Kisan", "applicant": applicant()})
+
+    assert "pm-kisan" in str(raised.value)
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

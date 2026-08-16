@@ -14,6 +14,12 @@ to say "achha" quickly. So the clock keeps two numbers: when audio of any kind
 started, and when the answer's audio started. The headline is the second. A
 configuration that met the target by talking over the gap reports how often it did,
 and a turn covered by filler is a turn the answer was late in.
+
+`BargeClock` is here rather than beside the turn-taking decisions it times, because
+the two clocks share the thing that is easy to get wrong. Both are backdated to a
+moment nothing had noticed yet, one to the last frame of speech and one to the first,
+and both would report a considerably better system if they were started where the code
+happens to find out.
 """
 
 from __future__ import annotations
@@ -116,6 +122,86 @@ class TurnClock:
     def met_p95_floor(self) -> bool:
         target = self.target_ms
         return target is not None and target < FIRST_AUDIO_P95_MS
+
+
+@dataclass
+class BargeClock:
+    """How long an interruption took, from the frame the interrupting speech began on.
+
+    Three numbers rather than one, because speech over the agent is a hypothesis before
+    it is a decision. Audio stops early and provisionally; the turn is abandoned later
+    and only once something is sure. Publishing the first alone would say the agent shuts
+    up in a hundred milliseconds while the reply it is no longer allowed to give is still
+    being generated behind it. Publishing the second alone would understate the thing the
+    listener perceives. `bench/stages.md` defines all three and this is the code written
+    to it.
+
+    The start is backdated the same way `TurnClock`'s is and for the same reason. Barge-in
+    detection needs `min_speech_ms` of speech before it fires, so a clock started at the
+    detection would silently remove that from every number.
+    """
+
+    started_ns: int
+    # When the server told the client to stop. The other half of the number
+    # `bench/stages.md` defines lives in the browser, which pauses on its own level
+    # detector without telling anyone, so the earlier of the two can only be taken
+    # somewhere that can see both ends. This field is the half the server can honestly
+    # claim, and it is named for that rather than for the number it contributes to.
+    server_paused_ms: float | None = None
+    committed_ms: float | None = None
+    resumed_ms: float | None = None
+    # What ended it. The paths have different costs by construction, so a median over
+    # both is a median over two distributions: the duration path waits out `commit_ms`
+    # of speech, and the verified path pays a transcription round trip instead.
+    outcome: str = ""
+
+    @classmethod
+    def from_speech(cls, run_ms: int) -> BargeClock:
+        """A clock started at the first frame of speech, given how much has been heard."""
+        return cls(started_ns=time.monotonic_ns() - run_ms * 1_000_000)
+
+    def elapsed_ms(self) -> float:
+        return (time.monotonic_ns() - self.started_ns) / 1_000_000
+
+    def mark_paused(self) -> None:
+        if self.server_paused_ms is None:
+            self.server_paused_ms = self.elapsed_ms()
+
+    def mark_committed(self, outcome: str) -> None:
+        """The turn is gone: the generation has moved and production has been stopped.
+
+        Recorded after the cancellation is awaited rather than after it is requested.
+        A number taken at the request would say the interruption completed while the
+        synthesiser was still writing into a queue, which is the failure the awaited
+        cancel in `SpeakingTurn.cancel` exists to prevent and would then be invisible.
+        """
+        if self.committed_ms is None:
+            self.committed_ms = self.elapsed_ms()
+            self.outcome = outcome
+
+    def mark_unresolved(self) -> None:
+        """The reply finished while the suspicion was still open.
+
+        Reachable through the stuck-hold release: the user says something short, playback
+        is held, nothing ever ends the utterance, and after `STUCK_HOLD_S` the rest of the
+        answer goes out over a suspicion nobody ever settled. It is neither an
+        interruption nor a backchannel, and it has no end boundary to measure, so it is
+        kept with none rather than given one. A bench that quietly dropped these would
+        report a median over the cases that went well.
+        """
+        if self.committed_ms is None and self.resumed_ms is None:
+            self.outcome = "unresolved"
+
+    def mark_resumed(self, outcome: str = "backchannel") -> None:
+        """Held audio is flowing again, on a turn that was never interrupted at all.
+
+        The price of asking rather than assuming. It is charged only on the verified arm
+        and only when the answer was no, so it belongs beside the interruptions rather
+        than inside them.
+        """
+        if self.resumed_ms is None:
+            self.resumed_ms = self.elapsed_ms()
+            self.outcome = outcome
 
 
 def remaining_ms(clock: TurnClock, deadline_ms: int) -> float:

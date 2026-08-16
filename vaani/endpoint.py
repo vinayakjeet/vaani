@@ -141,7 +141,10 @@ class Endpointer:
     waiting_ms: int = field(default=0, init=False)
     peak_rms: float = field(default=0.0, init=False)
     _started: bool = field(default=False, init=False)
-    _resume_ms: int = field(default=0, init=False)
+    # Unbroken speech ending at the frame just accepted. Two callers read it for two
+    # different questions: whether a pending endpoint should be cancelled, and how far
+    # back the barge-in clock has to be moved.
+    _speech_run_ms: int = field(default=0, init=False)
     _partial_complete: bool = field(default=False, init=False)
     # The turn's audio, kept only when an audio-based completion arm is in use. Capped at
     # what that arm reads, because an uncapped buffer on a 512MB instance is a way to lose
@@ -191,6 +194,23 @@ class Endpointer:
         """Whether enough speech has arrived to call this a turn."""
         return self._started
 
+    @property
+    def speech_run_ms(self) -> int:
+        """How long the speech happening right now has been going, unbroken.
+
+        `started` fires `min_speech_ms` after the first frame of an utterance, so a
+        barge-in clock started where detection fired would leave that out of every
+        number, in the flattering direction. This is what backdates it to the frame the
+        speech actually began on.
+
+        The unbroken run rather than `speech_ms`, and the difference is a chair creak
+        two seconds before somebody interrupts. That contributes one frame to the total
+        and no time at all to the run, so backdating by the total would move the clock's
+        start back across the whole gap and report two seconds of silence as barge-in
+        latency.
+        """
+        return self._speech_run_ms
+
     def diagnose(self) -> MicState:
         """Whether the microphone is working, judged only while waiting for speech.
 
@@ -236,13 +256,13 @@ class Endpointer:
 
         if speaking:
             self.speech_ms += FRAME_MS
-            self._resume_ms += FRAME_MS
+            self._speech_run_ms += FRAME_MS
             if self.speech_ms >= self.min_speech_ms:
                 self._started = True
             # Only sustained speech cancels a pending endpoint. One loud frame is a
             # click or a door, and letting it clear the timer is how a turn in a
             # noisy room never ends.
-            if self._resume_ms >= self.min_resume_ms:
+            if self._speech_run_ms >= self.min_resume_ms:
                 self.silence_ms = 0
                 if self.completion is not None:
                     # The audio arm's verdict must not latch, for the same reason the
@@ -254,7 +274,7 @@ class Endpointer:
                     self._partial_complete = False
             return False
 
-        self._resume_ms = 0
+        self._speech_run_ms = 0
         if not self._started:
             return False
 
@@ -279,7 +299,7 @@ class Endpointer:
         self.speech_ms = 0
         self.silence_ms = 0
         self._started = False
-        self._resume_ms = 0
+        self._speech_run_ms = 0
         self._partial_complete = False
         self.waiting_ms = 0
         self.peak_rms = 0.0

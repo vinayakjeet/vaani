@@ -324,6 +324,30 @@ class OpenAICompatibleProvider:
                 logger.warning("provider.stream.unreadable_frame", provider=self.name)
                 continue
 
+            if error := chunk.get("error"):
+                # A provider can refuse mid-stream and still have sent 200, because
+                # the status was written before it had anything to refuse. Groq does
+                # this for a tool call whose arguments do not match the declared
+                # schema: `event: error`, one data frame, no choices, no [DONE].
+                #
+                # Without this the frame falls through every branch below and the
+                # stream ends having yielded nothing, which reaches the truncation
+                # guard and is reported as a dropped connection. A schema rejection
+                # and a dead socket then look identical, and the provider's own
+                # explanation of which one it was has already been discarded. That
+                # cost a live turn and an afternoon: every reply arrived as filler
+                # and then silence, with "stream ended before any content" in the log.
+                #
+                # The code and the message, never `failed_generation`. That key holds
+                # the arguments the model tried to send, which on this pipeline is an
+                # applicant's income, and it is the one part of the body that must not
+                # travel. `ProviderClientError` is already excluded from what the
+                # session logs, for the same reason one step further out.
+                raise ProviderClientError(
+                    f"{self.name}: {error.get('code') or error.get('type') or 'error'}: "
+                    f"{error.get('message', '')}"
+                )
+
             if chunk.get("usage"):
                 tokens_in, tokens_out = self._usage_parser(chunk)
 

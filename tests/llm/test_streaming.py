@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 
+import llm.providers.registry as registry_module
 from llm.client import ChatClient
 from llm.providers.base import OpenAICompatibleProvider
 from llm.types import (
@@ -439,3 +440,86 @@ async def test_the_gate_is_waited_on_before_streaming(monkeypatch) -> None:
     await drain(client.stream("flaky", [ChatMessage(role="user", content="hi")]))
 
     assert waited == [2.5]
+
+
+# The frame Groq actually sent, with `failed_generation` left in at full length
+# because the point of two of these tests is that it does not come back out.
+TOOL_REJECTION = json.dumps(
+    {
+        "error": {
+            "message": (
+                "tool call validation failed: parameters for tool check_eligibility did "
+                "not match schema: errors: [`/applicant/annual_income_inr`: expected "
+                "integer, but got string]"
+            ),
+            "type": "invalid_request_error",
+            "code": "tool_use_failed",
+            "failed_generation": (
+                '<function=check_eligibility>{"applicant": {"annual_income_inr": '
+                '"50000", "state": "Bihar"}}</function>'
+            ),
+            "status_code": 400,
+        }
+    }
+)
+
+
+async def test_a_refusal_sent_with_a_200_is_reported_as_a_refusal() -> None:
+    """The failure this whole path was built blind to.
+
+    A provider writes the status before it has anything to refuse, so a tool call it
+    rejects arrives as HTTP 200 with an error frame and no choices. Every branch in the
+    parser looked at `choices`, so the stream ended having yielded nothing and hit the
+    truncation guard, and a schema rejection came back worded as a dropped connection.
+
+    On the deployed service that meant every reply was filler and then silence, with
+    "stream ended before any content" in the log and no way to tell which of the two it
+    had been.
+    """
+    stream = provider(streaming(sse("event: error", f"data: {TOOL_REJECTION}")))
+
+    with pytest.raises(ProviderClientError) as raised:
+        async for _event in stream.stream_completion([ChatMessage(role="user", content="hi")]):
+            pass
+
+    assert "tool_use_failed" in str(raised.value)
+    assert "annual_income_inr" in str(raised.value)
+
+
+async def test_a_refusal_is_not_retried(monkeypatch) -> None:
+    """`ProviderClientError` is deliberately not a `ProviderError`, so the retry loop
+    does not catch it. Before this the same rejection was sent five times over ten
+    seconds of backoff, and it could never have succeeded on any of them: the arguments
+    were wrong by construction and the model was given no new information."""
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(200, content=sse("event: error", f"data: {TOOL_REJECTION}"))
+
+    monkeypatch.setitem(registry_module._PROVIDERS, "testprov", provider(handler))
+
+    client = ChatClient()
+    with pytest.raises(ProviderClientError):
+        async for _event in client.stream(
+            "testprov", [ChatMessage(role="user", content="hi")]
+        ):
+            pass
+
+    assert attempts == 1
+
+
+async def test_the_refusal_never_carries_the_arguments_back() -> None:
+    """`failed_generation` holds what the model tried to send, which on this pipeline is
+    an applicant's income. It is the one part of the body that must not travel, and the
+    rest of the message is field paths and types, which is what makes it diagnosable."""
+    stream = provider(streaming(sse("event: error", f"data: {TOOL_REJECTION}")))
+
+    with pytest.raises(ProviderClientError) as raised:
+        async for _event in stream.stream_completion([ChatMessage(role="user", content="hi")]):
+            pass
+
+    assert "50000" not in str(raised.value)
+    assert "Bihar" not in str(raised.value)
+    assert "failed_generation" not in str(raised.value)

@@ -18,7 +18,13 @@ from collections.abc import AsyncIterator, Callable
 import structlog
 
 from llm import ChatClient, ChatMessage
-from llm.types import StreamCompleted, TextChunk, ToolCall, ToolCallsRequested
+from llm.types import (
+    ProviderClientError,
+    StreamCompleted,
+    TextChunk,
+    ToolCall,
+    ToolCallsRequested,
+)
 from vaani.grounding import sourced
 from vaani.spans import LLM_GENERATE, stage_span
 from vaani.tools import ToolError, dispatch, tool_schemas
@@ -99,33 +105,55 @@ class StreamedTurn:
         for round_index in range(self._max_tool_rounds + 1):
             requested: list[ToolCall] = []
 
-            async for event in self._llm.stream(
-                self._provider, messages, tools=tool_schemas()
-            ):
-                match event:
-                    case TextChunk():
-                        if not first_token:
-                            first_token = True
-                            stage.record(
-                                **{
-                                    "vaani.llm.first_token_ms": (
-                                        time.monotonic() - started
-                                    )
-                                    * 1000
-                                }
+            try:
+                async for event in self._llm.stream(
+                    self._provider, messages, tools=tool_schemas()
+                ):
+                    match event:
+                        case TextChunk():
+                            if not first_token:
+                                first_token = True
+                                stage.record(
+                                    **{
+                                        "vaani.llm.first_token_ms": (
+                                            time.monotonic() - started
+                                        )
+                                        * 1000
+                                    }
+                                )
+                            yield event.text
+                        case ToolCallsRequested():
+                            requested = event.calls
+                        case StreamCompleted():
+                            # Length, never the text. The reply is about a real
+                            # person's eligibility, so it stays out of logs entirely.
+                            logger.info(
+                                "turn.round",
+                                round=round_index,
+                                finish_reason=event.finish_reason,
+                                tool_calls=len(requested),
                             )
-                        yield event.text
-                    case ToolCallsRequested():
-                        requested = event.calls
-                    case StreamCompleted():
-                        # Length, never the text. The reply is about a real
-                        # person's eligibility, so it stays out of logs entirely.
-                        logger.info(
-                            "turn.round",
-                            round=round_index,
-                            finish_reason=event.finish_reason,
-                            tool_calls=len(requested),
-                        )
+            except ProviderClientError as exc:
+                # Groq can fail to turn the model's own generation into a tool call at
+                # all: `tool_use_failed` with "Failed to call a function", raised before
+                # `ToolCallsRequested` ever fires. That is not our schema rejecting the
+                # arguments, which the model can read and correct within its remaining
+                # rounds; it is the provider never producing a structured call to
+                # correct, so there is no `tool_call_id` to attach a result to and
+                # nothing to feed back.
+                #
+                # Left uncaught this propagates out of the whole turn, past every
+                # degradation rule SPEC has, to the session's generic playback handler,
+                # which is the exact "filler, then silence" a listener hears from a
+                # cause that has nothing to do with a dropped connection. Ending the
+                # turn here, the same way running out of rounds already does, is a
+                # known and tested failure path rather than a new one.
+                logger.warning(
+                    "turn.tool_call_rejected", round=round_index, detail=str(exc)
+                )
+                stage.record(**{"vaani.llm.rounds": round_index + 1})
+                yield COULD_NOT_CHECK
+                return
 
             if not requested:
                 stage.record(**{"vaani.llm.rounds": round_index + 1})

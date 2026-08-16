@@ -20,9 +20,16 @@ rather than deeper in, which is Quality Bar point 6.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    WithJsonSchema,
+)
 
 
 class ToolError(Exception):
@@ -34,12 +41,86 @@ class ToolError(Exception):
     """
 
 
+def _from_spoken_number(value: Any) -> Any:
+    """A quantity the model wrote as text, which is what this one does.
+
+    Llama emits `"50000"` for a field declared `integer`, and Groq validates tool
+    arguments against the declared schema on its own side before any of it reaches
+    us. So a strict `integer` is not a stricter contract here, it is a refusal: the
+    call is rejected with `tool_use_failed`, no text is ever generated, and the
+    listener hears the filler and then nothing. Every eligibility question failed
+    that way on the deployed service.
+
+    Widening the declared type and narrowing here is the trade this makes. The
+    schema meets the model where it is and the value is an `int` by the time
+    anything reads it, so the eligibility rules are unchanged and still cannot be
+    handed a string. Commas and rupee signs are stripped because a model asked for
+    an income in a Hindi conversation writes one.
+    """
+    if not isinstance(value, str):
+        return value
+
+    cleaned = value.strip().replace(",", "").replace("₹", "").removeprefix("Rs.")
+    cleaned = cleaned.strip()
+    if not cleaned:
+        return value
+    try:
+        # Through float, so "50000.0" is a number rather than a rejection. A model
+        # that writes an income with a decimal point has still said the number.
+        return float(cleaned)
+    except ValueError:
+        # Left alone for the model's own validator to reject with a real message.
+        # Guessing at "bahut kam" would invent an income for somebody.
+        return value
+
+
+# A number the schema accepts as either, because the model sends either. The runtime
+# type is unchanged: `BeforeValidator` runs first and `int`/`float` still enforce it.
+#
+# Plain aliases rather than the `type` statement. A PEP 695 alias becomes a `$ref` into
+# `$defs`, and this schema is read by a provider's validator rather than by us, so a
+# reference it may not resolve is a worse contract than a repeated four-line object.
+Rupees = Annotated[
+    int,
+    Field(ge=0),
+    BeforeValidator(_from_spoken_number),
+    WithJsonSchema({"type": ["integer", "string"], "minimum": 0}),
+]
+Acres = Annotated[
+    float,
+    Field(ge=0),
+    BeforeValidator(_from_spoken_number),
+    WithJsonSchema({"type": ["number", "string"], "minimum": 0}),
+]
+Limit = Annotated[
+    int,
+    Field(ge=1, le=20),
+    BeforeValidator(_from_spoken_number),
+    WithJsonSchema({"type": ["integer", "string"], "minimum": 1, "maximum": 20}),
+]
+
+
+def _absent_when_spelled_out(value: Any) -> Any:
+    """An optional the model filled in with the word for empty.
+
+    It sends `"null"` as a string for a field it has nothing to put in, which passes
+    a `str | None` unnoticed and then filters a scheme search by a state of that
+    name. A quiet wrong answer rather than a refusal, so it is caught here.
+    """
+    if isinstance(value, str) and value.strip().casefold() in {"", "null", "none", "nan"}:
+        return None
+    return value
+
+
+OptionalText = Annotated[str | None, BeforeValidator(_absent_when_spelled_out)]
+
+
 class Applicant(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     state: str
-    annual_income_inr: int = Field(ge=0)
-    land_holding_acres: float = Field(default=0.0, ge=0)
+    annual_income_inr: Rupees
+    land_holding_acres: Acres = 0.0
     category: str = "general"
 
 
@@ -61,8 +142,8 @@ class SchemeQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str
-    state: str | None = None
-    limit: int = Field(default=5, ge=1, le=20)
+    state: OptionalText = None
+    limit: Limit = 5
 
 
 class Scheme(BaseModel):
@@ -122,7 +203,19 @@ def check_eligibility(arguments: dict[str, Any]) -> Eligibility:
 
     rule = _BY_ID.get(request.scheme_id)
     if rule is None:
-        raise ToolError(f"no scheme with id {request.scheme_id!r}")
+        # The valid ids, not just the complaint. `ToolError`'s message is what the
+        # model reads to correct itself within `MAX_TOOL_ROUNDS`, and a scheme name
+        # is not a scheme id: asked about "PM Kisan", the model called this with
+        # `scheme_id="PM Kisan"` rather than `"pm-kisan"`, and a bare "no scheme
+        # with id 'PM Kisan'" gave it nothing to fix, so every retry guessed again
+        # and the turn burned its whole budget landing on "I could not check."
+        # Listing the ids is a smaller contract change than requiring `find_schemes`
+        # first, which is a workflow nothing enforces and this model did not follow
+        # on its own.
+        raise ToolError(
+            f"no scheme with id {request.scheme_id!r}. Valid scheme_id values: "
+            f"{', '.join(sorted(_BY_ID))}"
+        )
 
     # The verdict comes from the comparisons, never from reading the sentences
     # they produced. Deriving a boolean by matching a substring of prose written

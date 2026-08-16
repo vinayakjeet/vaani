@@ -12,6 +12,196 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-16: A schema a provider validates has to accept what the model actually sends, and a rejection it cannot see must not be silent
+
+**Context:** every eligibility question on the deployed service failed: the user heard
+the filler clip and nothing after it. Reproduced against the live socket and traced
+through Render's logs. The model, llama-3.3-70b on Groq, called `check_eligibility`
+with `annual_income_inr: "50000"`, a string, against a schema declaring `integer`.
+Groq validates tool arguments against the declared JSON schema on its own side before
+generation completes, rejected the call, and streamed back HTTP 200 with `event: error`
+and no `choices` at all. `_events` only inspected `choices`, saw an empty stream, and
+raised `"stream ended before any content"`, the message written for a dropped
+connection. A schema rejection and a dead socket were indistinguishable, and the
+provider's own explanation, which named the exact field and the exact type mismatch,
+was discarded before anything could read it.
+
+Fixing the type surfaced a second failure on the very next call: `find_schemes` was
+rejected the same way over `limit`. The model sends every number as text, not just the
+two in the first report. And once both were fixed, a live question exposed a third
+failure that could not have been reached by a fix to our own schema: the model asked
+about "PM Kisan" by name, called the tool with `scheme_id: "PM Kisan"` rather than the
+slug `"pm-kisan"`, and `ToolError`'s message named the complaint but not the fix, so
+three rounds of guessing produced three more wrong ids and the turn gave up. And a
+fourth, found only by re-running the live question repeatedly: Groq can fail to parse
+its own generation into a structured tool call at all (`tool_use_failed`, "Failed to
+call a function"), which raises before `ToolCallsRequested` ever fires and has no
+`tool_call_id` to attach a corrective result to. That exception was uncaught anywhere
+in `StreamedTurn`, so it propagated past every degradation rule in SPEC to the
+session's generic playback handler, which is the same filler-then-silence experience
+from an entirely different cause.
+
+None of the four were visible to the test suite. The tool tests hand
+`check_eligibility` a dictionary directly, which never builds the schema, never sends
+it anywhere, and never meets the validator that actually rejects it - the arguments
+under test were the ones this repo would have written, not the ones a model writes.
+
+**Decision:** four independent fixes, one per failure.
+
+`Rupees`, `Acres`, and `Limit` in `vaani/tools.py` are `Annotated` types carrying a
+`BeforeValidator` that coerces a numeric string (commas and a rupee sign stripped,
+since a model asked for an income in a Hindi conversation writes one) and a
+`WithJsonSchema` override publishing `{"type": ["integer", "string"]}` rather than a
+bare `"integer"`. The runtime type is unchanged: coercion happens before Pydantic's own
+`int`/`float` validation, so `check_eligibility` still cannot be handed a string, only
+the door into it widened. Plain `Annotated` aliases rather than a PEP 695 `type`
+statement, because the alias form emits a `$ref` into `$defs` and this schema is read
+by a provider's validator rather than by us: a reference it does not resolve is a worse
+contract than a repeated few lines. `OptionalText` does the same for `state: str | None`,
+which the model fills with the literal string `"null"` when it has nothing to put
+there, silently filtering a search by a state of that name rather than leaving it
+unset.
+
+`llm/providers/base.py` parses an `error` key on any decoded SSE frame and raises
+`ProviderClientError` with the provider's `code` and `message`, never
+`failed_generation`, which holds the arguments the model tried to send and on this
+pipeline is an applicant's income.
+
+`check_eligibility`'s `ToolError` on an unknown id now lists every valid `scheme_id`,
+because that message is the only channel the model has to correct itself inside
+`MAX_TOOL_ROUNDS`, and a scheme's name is not its slug.
+
+`StreamedTurn._rounds` wraps each round's stream in a `try`/`except ProviderClientError`
+and degrades to `COULD_NOT_CHECK`, the same message and the same tested path that
+running out of tool rounds already uses. Chosen over retrying blind, since there is no
+corrected information to feed back and a graceful, known failure path already exists
+for the same words a listener would hear either way.
+
+**Alternatives considered:** an enum of valid scheme ids enforced in the published JSON
+schema, so Groq itself rejects a wrong id, rejected because that rejection would arrive
+as a `ProviderClientError` with no `tool_call_id`, exactly the fourth failure this
+decision already had to add a path for, and turning a self-correctable mistake into an
+uncatchable one is the wrong direction. Retrying a `tool_use_failed` blind within the
+round budget, rejected as the same wait for a worse expected outcome the whole verified
+barge-in arm exists to avoid paying elsewhere: the failure is a parsing quirk in the
+provider's own generation, and nothing this process does changes the odds on a retry
+sampled from the same distribution.
+
+A fifth failure was found and left open: in one of five live runs, the model wrote its
+tool call as literal text in `delta.content` - `<function=check_eligibility>{...}
+</function>` - rather than a structured delta, which every check here passes and which
+would be synthesised and spoken verbatim, including the applicant's own figures inside
+garbled syntax. Not fixed here, because catching it needs buffering partial content
+across chunk boundaries to match a pattern reliably, and a pattern wrong in the other
+direction would swallow a legitimate reply, which is worse than the flake it replaces.
+Recorded as M3.10.
+
+**Consequences:** `tests/vaani/test_tool_schema_contract.py` enumerates every numeric
+field in every published tool schema rather than checking the two that were reported,
+because fixing exactly the two moved the failure to a third the same afternoon.
+`tests/llm/test_streaming.py` and `tests/vaani/test_llm_turn.py` each gained a test
+built from the exact frame Groq sent, not an imagined one. None of the four call Groq:
+what they prove is that the code handles the frame correctly once it exists, not that
+the frame does. That gap is real and is what running the live probe caught that the
+suite could not, three separate times in one evening, which is the same lesson
+Spanlight's field study paid for: an eval set, or here a test suite, whose inputs
+cannot move passes forever.
+
+## 2026-08-14: Barge-in latency is measured against a modelled browser, and the clock is checked against the frame it infers
+
+**Context:** M2.4 asks for barge-in latency over 20 runs, and `bench/stages.md`
+had already split it into three numbers rather than one, because speech over the
+agent is a hypothesis before it is a decision. The definition of the first of
+them is where the difficulty is: audio stops reaching the listener at the earlier
+of the browser pausing on its own level detector and the server's PAUSE arriving.
+The browser half happens in the browser, is never reported, and is therefore
+invisible to any clock inside the server. A client that did report it would be
+reporting across two unsynchronised clocks, so the reported number would be the
+skew between two machines plus the thing being measured.
+
+**Decision:** `bench/bargein.py` runs the page's own preemption rule, three
+consecutive frames over an RMS of 500, on the same frames it feeds a real
+`VoiceSession`, in one process against one monotonic clock. Both ends of the
+number are then observable and the earlier of them is `paused_ms`. Three arms are
+driven separately and reported separately, because the duration path waits out
+800ms of speech and the verified path waits out an utterance and a transcription,
+and a median over both would be a median over two distributions.
+
+The start boundary is inferred rather than observed by the running system, and
+that inference is what `BargeClock` exists for. Detection cannot fire until
+`min_speech_ms` of speech has arrived, so the clock is wound back by the length of
+the unbroken speech run to reach the frame the speech began on. The run rather
+than the total: a chair creak two seconds earlier adds one frame to `speech_ms`
+and no time to the run, and backdating by the total would report the whole
+intervening silence as barge-in latency.
+
+Nothing in production can check that inference, because production has no record
+of which frame the speech began on. The harness sent it, so the bench publishes
+the disagreement between the two as a `clock error` row.
+
+**Measured, 20 runs per arm, on the development machine, frames paced at 20.7ms
+against a 20ms target:**
+
+| arm | paused p50/p95 | server PAUSE p50/p95 | settled p50/p95 |
+|---|---|---|---|
+| duration | 61.2 / 62.6 | 207.1 / 209.4 | 831.9 / 836.3 committed |
+| verified, real interruption | 61.6 / 62.4 | 206.8 / 208.8 | 1141.9 / 1147.7 committed |
+| verified, backchannel | 61.5 / 62.5 | 207.3 / 209.9 | 1139.5 / 1149.8 resumed |
+
+The client's detector won every single run of all sixty, at roughly 61ms against
+the server's 207ms, and that gap is before a network is involved at all. On the
+deployed stack the server's PAUSE is a further one-way trip behind. That is what
+M2.11 buys, and it is now a number rather than an argument.
+
+Almost all of each figure is the threshold it waits for. Above the frame of audio
+that first made each decision possible, the client pause costs 0.0ms, the server
+pause 0.4ms at p50, and abandoning the turn 1.6ms. So there is nothing to optimise
+here and the knobs are the whole latency: `PREEMPT_FRAMES`, `min_speech_ms` and
+`commit_ms` are what the ablation should sweep, not the code between them.
+
+None of these are compared against the 100ms figure in the tail-control brief.
+That remains a budget to verify against now that a measurement exists, in that
+order, because this portfolio has twice paid for the other one.
+
+**Alternatives considered:** having the client report its own pause over the
+socket, rejected for the clock-skew reason above and because it puts a message on
+the wire that exists only to be measured. Measuring the server's PAUSE alone and
+publishing it as the barge-in latency, rejected as the flattering-in-reverse
+option: it triples the number a listener actually perceives, and it would have
+made client-side preemption look worthless. Driving a real browser, rejected
+because a test that needs a microphone is a test that never runs in CI, and this
+one has to run there.
+
+**Consequences:** the bench duplicates a rule that lives in `web/index.html`, so
+a change to the page silently changes what this measures. There is a test that
+reads both constants out of the page and fails when they drift, which is the
+price of the duplication paid rather than deferred.
+
+Two facts about the harness are now part of the published numbers. Frames are
+paced against an absolute schedule and never sent sooner than one interval after
+the last, since a catch-up burst is speech arriving faster than anyone can talk
+and it put the client's own pause 56ms after an onset its three-frame detector
+cannot beat 60ms on. And the Windows default timer period of 15.6ms is most of a
+frame, so the bench raises it to 1ms for the duration of a run: 22.3ms mean and
+35.7ms worst before, 20.7ms mean and 20.9ms worst after. The residual 3.5% is
+reported at the top of every run rather than corrected away, because it is in
+every number underneath it.
+
+The clock error is published raw and net of that pacing. Raw it is 6.5 to 10ms;
+net it is 0.1 to 0.2ms, which is what says the backdating is right. Only the net
+figure is asserted on, because a test that fails whenever the machine running it
+is busy is a test that gets disabled instead of fixed.
+
+Nothing in the regression test is asserted in milliseconds of wall clock either,
+and that was not the first version. Every threshold in this pipeline is counted in
+frames of audio, so the earliest moment a decision can be reached is the moment its
+nth frame arrived, and a bound written against a nominal 20ms fails whenever the
+machine cannot feed audio that fast. Measured at 20.7ms a frame idle and 28.0ms
+under a full suite, which moves the headline pause from 61ms to 84ms with no code
+change at all. The bench now says at the top of every run whether it stayed inside
+a 10% tolerance, and reports the overhead columns, which survive a slow run,
+alongside the absolute ones, which do not.
+
 ## 2026-08-14: The conversation record admits a sentence only once its audio has gone out
 
 **Context:** M2.7b, and the fact that Vaani had no conversation record at all. Each turn
