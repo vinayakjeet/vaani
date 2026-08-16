@@ -12,6 +12,61 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: A quiet caller gets told the mic looks fine, in text, and the spoken version is deliberately not built tonight
+
+**Context:** M2.15 asks for Bolna's check-in message after extended silence, distinct from
+the S6 microphone diagnostic, on the grounds that "the mic looks broken" and "the mic is
+fine but nobody is talking" currently read identically to the person on the other end.
+`Endpointer.diagnose()` already separates `SILENT` (digital zero, likely muted or denied
+permission) from `TOO_QUIET` (something registers, never enough to count as speech), so the
+signal already exists; only `TOO_QUIET` gets an additional message, since `SILENT` already
+has a specific, accurate diagnostic and "are you there" is the wrong question for someone
+who cannot be heard at all.
+
+Speaking it rather than showing it, which is what the item and Bolna's own design both
+mean by "say," was scoped out once the client's actual message handling was read rather
+than assumed. `case "audio_end"` calls `newTurnSoon`, and if `sawAnswer` was never set true
+by a `transcript` message it shows "that was filler, the answer did not arrive." A check-in
+played through the existing `audio_start`/bytes/`audio_end` sequence sends no transcript, so
+it would trip that fallback and misreport its own message as a failed turn. Fixing that
+correctly needs the protocol to say what kind of audio is arriving, which is a real but
+separate piece of work, against a client with zero existing test coverage for inbound audio
+playback, in the same session that had already found two other live-only bugs in exactly
+that path.
+
+**Decision:** `ServerMessage.CHECKING_IN`, a text-only control message, sent once per
+listening window when `diagnose()` reads `TOO_QUIET`. It reuses S6's existing 5-second
+`silence_timeout_ms` signal rather than Bolna's separate 6-second timer, since both are
+answering the same underlying question, "has this gone on too long with nothing," and a
+second independent clock for a nearly identical threshold is complexity with no behaviour
+to show for it. The client gets one new, purely additive `case` in its message switch,
+which cannot alter any existing message's handling because it is not touching one.
+
+Writing the test for this surfaced a real, narrow, pre-existing gap: `diagnose()` reads
+`peak_rms`, a running maximum updated on every frame, while `started` needs
+`min_speech_ms` of sustained speech to flip. Real speech beginning right after a long
+silence is loud on its first frame and not yet `started` for the next several, so for that
+window the state genuinely reads `TOO_QUIET` while somebody has already begun talking. Left
+in `diagnose()` itself, this would have greeted the start of a real answer with a "still
+there" message. Guarded at the call site instead, `speech_ms == 0` alongside the state
+check, because fixing `diagnose()`'s own timing is a separate, more invasive change than
+this item asked for, and the guard is enough to make this feature correct without it.
+
+**Alternatives considered:** a synthesised, spoken check-in via the existing filler
+mechanism, rejected for the `sawAnswer` reason above; the fix belongs in the protocol, not
+smuggled through a mechanism built for something else. A second independent silence timer
+matching Bolna's exact 6 seconds, rejected as a distinction with no real difference from
+reusing S6's 5-second one, for a session that has no evidence either number is closer to
+right, since M4.2's corpus has not run.
+
+**Consequences:** the spoken half stays open, tracked as the remainder of M2.15, and needs
+its own careful pass: a protocol field distinguishing check-in audio from answer audio, a
+client-side test harness for inbound playback that does not currently exist at all, and
+verification against the live deploy before it ships, not blind trust that it works. The
+`diagnose()` timing gap is now known and stated rather than quietly worked around; whatever
+else reads `TOO_QUIET` in the future inherits the same narrow window unless it is fixed at
+the source.
+
 ## 2026-08-17: A resolved interruption is acknowledged, because the hazard that blocked it cannot reach that path
 
 **Context:** M2.8 had its recording half done since M4.12 and its acknowledgement half

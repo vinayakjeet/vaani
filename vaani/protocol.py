@@ -54,6 +54,14 @@ class ServerMessage(StrEnum):
     # short "haan" cost nothing instead of costing the reply.
     PAUSE = "pause"
     RESUME = "resume"
+    # Sent once when the mic is audibly working but nobody has said anything for a
+    # while, distinct from ERROR's "microphone" reason: that one means the input
+    # looks broken, this one means it looks fine and the person may simply have
+    # stepped away. Text only for now. A spoken version needs a way to tell the
+    # client this audio is a check-in rather than a turn's answer, which the
+    # existing audio_start/audio_end pair does not carry, and building that without
+    # any test coverage for inbound audio is its own piece of work.
+    CHECKING_IN = "checking_in"
 
 
 class ProtocolError(ValueError):

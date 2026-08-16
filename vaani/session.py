@@ -391,6 +391,24 @@ class VoiceSession:
             }
         )
 
+        # A working mic that has heard nothing is a different situation from a broken
+        # one, and currently reads identically from the far end: silence either way.
+        # SILENT keeps only the diagnostic above, since asking "are you there" of
+        # someone who cannot be heard at all is the wrong message; TOO_QUIET means the
+        # input looks fine and the honest reading is that the person may simply have
+        # stepped away, which the diagnostic alone does not say.
+        #
+        # `speech_ms == 0` on top of the state check, found writing the test for this
+        # rather than assumed: `diagnose` reads `peak_rms`, a running max updated on
+        # every frame, while `started` needs `min_speech_ms` of sustained speech.
+        # Real speech beginning right after a long silence is loud on its very first
+        # frame and started for none of the next several, so for up to that many
+        # frames the state genuinely reads TOO_QUIET while somebody is mid-word. This
+        # excludes exactly that window rather than greeting the start of an answer
+        # with "are you still there".
+        if state is MicState.TOO_QUIET and self._endpointer.speech_ms == 0:
+            await self._say({"type": ServerMessage.CHECKING_IN})
+
     def _begin_listening(self) -> None:
         self._state.begin()
         self._endpointer.reset()

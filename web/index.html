@@ -468,6 +468,13 @@ function handle(message) {
         setState("listening", "live");
       }
       break;
+
+    // The mic looks fine and nobody has said anything for a while. Text only for
+    // now: speaking this needs a way to tell audio_end this audio was not an
+    // answer, which the protocol does not carry yet.
+    case "checking_in":
+      say("system", "aap wahin hain? (still there?)", "sys");
+      break;
   }
 }
 

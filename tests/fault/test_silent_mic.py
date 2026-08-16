@@ -179,3 +179,35 @@ async def test_a_working_session_is_never_complained_about() -> None:
 
     assert client.complaints() == []
     assert ServerMessage.ERROR not in [m.get("type") for m in client.json]
+
+
+def checkins(client: Client) -> list[dict]:
+    return [m for m in client.json if m.get("type") == ServerMessage.CHECKING_IN]
+
+
+async def test_a_quiet_speaker_also_gets_a_check_in() -> None:
+    """M2.15. A working mic that has heard nothing looks identical to a broken one
+    from the far end unless something says otherwise. TOO_QUIET is the state that
+    means the input is fine and the person may simply have gone quiet."""
+    client = await drive(*frames_of(ROOM_NOISE, 6000), until=lambda c: checkins(c))
+
+    assert checkins(client)
+
+
+async def test_a_muted_microphone_does_not_also_get_a_check_in() -> None:
+    """Asking "are you there" of someone who cannot be heard at all is the wrong
+    message; SILENT already has its own, more specific, diagnostic."""
+    client = await drive(
+        *frames_of(SILENCE, 6000), *frames_of(SPEECH, 600), *frames_of(SILENCE, 800),
+        until=lambda c: c.audio,
+    )
+
+    assert client.complaints()
+    assert checkins(client) == []
+
+
+async def test_the_check_in_is_said_once_not_every_frame() -> None:
+    client = await drive(*frames_of(ROOM_NOISE, 8000), until=lambda c: checkins(c))
+    await asyncio.sleep(0.05)
+
+    assert len(checkins(client)) == 1
