@@ -12,6 +12,54 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-16: The chunked STT interval moves from 400ms to 600ms, measured against live Groq rather than reasoned about
+
+**Context:** a live test reported "very very high latency." Pulled the actual session from
+Render's logs rather than guessing: one turn took roughly 7.5 seconds end to end, and about
+5 of those seconds were the STT stage alone, nine sequential Whisper requests
+(`stt.stream_done requests=9`) between the first partial and the final transcript. `ChunkedStt`
+re-sends the whole growing buffer every `interval_ms` because Groq's endpoint takes a finished
+file rather than a stream, and the class's own docstring already named this "likely the single
+largest difference between the two waterfalls." Nobody had put a number on it before this test.
+
+Before changing the interval, the real risk was whether widening it could make an ordinary
+turn's endpoint wait worse, since partials also feed `Endpointer.note_partial`, which shortens
+the trailing-silence wait from 700ms to 200ms once a partial looks complete. Traced rather
+than assumed: `silence_ms` counts continuously from the last frame of speech regardless of
+when a partial arrives, so a partial confirming completeness at `silence_ms=X` satisfies
+`silence_ms >= early_silence_ms` immediately if X already exceeds it, firing on the very next
+frame. The endpoint fires at `max(X, early_silence_ms)`, which is at most `trailing_silence_ms`
+either way. A later-confirming partial is therefore never worse than the unconditional
+700ms fallback the turn would have had without semantic endpointing at all, only sometimes
+less early. That made the interval a one-sided knob to widen, not a trade against the
+endpoint-wait number, which is the reasoning `bench/waterfall.py` will eventually have to
+make a stack-wide claim rather than a stage-local one.
+
+**Decision:** `interval_ms` defaults to 600. Measured against live Groq for a four-second
+utterance: 11 requests and 7.76s of STT wall time at 400ms, 7 requests and 4.05s at 600ms, 5
+requests and 3.25s at 800ms. 600 over 800 because the marginal win past it is small (4.05s to
+3.25s) while the cost is not: a wider interval delays how soon a completed sentence can be
+confirmed, bounded by `trailing_silence_ms` but real, and 800 would double that delay against
+400 for a small further cut in requests.
+
+**Alternatives considered:** 800ms for the larger raw request-count cut, rejected for the
+diminishing-returns reason above. A provider switch to a genuinely streaming STT endpoint
+(Sarvam's Saaras is in the provider table already), rejected for now because it spends credit
+that QUOTAS.md records as scarce and the dev loop is built to never touch it; also because 600
+already moves the dominant cost without spending anything, and switching providers is a
+question this project's own two-stack ablation should answer with a measurement rather than a
+reaction to one anecdote. Not changing anything and waiting for M4's waterfall, rejected
+because the cost was already visible, named in the code before this session, and measurable
+in five minutes against the real endpoint.
+
+**Consequences:** every eligibility question now pays roughly half the STT wall time a long
+utterance did before, and short utterances pay at most 200ms more before a completeness
+check can fire, bounded by the reasoning above. `tests/vaani/test_stt_stream.py` pins the
+default so a future edit changes it on purpose. What is still not measured: whether 600 is
+actually the point of diminishing returns for the full range of utterance lengths real users
+produce, rather than the one four-second sample here, which is exactly the gap `bench/waterfall.py`
+and the recorded corpus in M4.2 exist to close, and this decision does not pretend otherwise.
+
 ## 2026-08-16: A schema a provider validates has to accept what the model actually sends, and a rejection it cannot see must not be silent
 
 **Context:** every eligibility question on the deployed service failed: the user heard

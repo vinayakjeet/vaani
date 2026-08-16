@@ -102,6 +102,26 @@ class ChunkedStt:
     be replaced by the next one, and failing the turn over a discarded intermediate
     result would trade a real answer for a provisional one. The final transcript is
     the one allowed to fail loudly.
+
+    `interval_ms` was 400 and is now 600, moved 2026-08-16 on a live turn against
+    Groq's real endpoint (India to wherever Groq answers from) rather than on a
+    guess: a four-second utterance fired 11 partial requests at 400ms and took 7.76s
+    of wall time in the STT stage alone, against 7 requests and 4.05s at 600ms and 5
+    requests and 3.25s at 800ms. 600 was chosen over 800 because the win past it is
+    small while the cost is not: `note_partial` can only use whichever partial last
+    arrived, so a wider interval delays how soon a completed sentence can be
+    confirmed, and 800ms would double that delay against 400 for no matching gain.
+    The choice cannot make an ordinary turn's endpoint wait worse than it already
+    was without semantic endpointing at all. Tracing `Endpointer.accept`: silence_ms
+    keeps counting from the last frame of speech regardless of when a partial
+    arrives, so a partial confirming completeness at silence_ms=X immediately
+    satisfies `silence_ms >= early_silence_ms` if X exceeds it, firing on the very
+    next frame rather than 200ms further out. The endpoint fires at
+    `max(X, early_silence_ms)`, which is at most `trailing_silence_ms` (700) either
+    way, so a later-arriving confirmation is never worse than the unconditional
+    fallback, only sometimes less early. `bench/waterfall.py` is what makes this a
+    stack-wide number instead of one stage's; until it exists this is the honest
+    scope of the claim.
     """
 
     streaming = False
@@ -109,7 +129,7 @@ class ChunkedStt:
     def __init__(
         self,
         transcriber: SttProvider,
-        interval_ms: int = 400,
+        interval_ms: int = 600,
         reuse_final_within_ms: int = 700,
     ) -> None:
         self._transcriber = transcriber

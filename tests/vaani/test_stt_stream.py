@@ -131,6 +131,21 @@ async def test_an_utterance_with_no_audio_still_produces_a_final(kind: str) -> N
     assert seen[-1].final
 
 
+def test_the_default_interval_is_the_measured_one() -> None:
+    """Pinned so a future edit changes this number on purpose rather than by
+    reverting a merge conflict back to a guess.
+
+    Moved from 400 to 600 on 2026-08-16 against live Groq, not on reasoning alone:
+    a four-second utterance cost 11 requests and 7.76s of wall time in the STT
+    stage at 400ms, 7 requests and 4.05s at 600, 5 requests and 3.25s at 800. 600
+    was chosen over 800 because the win past it is small and the cost is not: a
+    wider interval delays how soon `note_partial` can see a completed sentence,
+    and that delay is bounded by `trailing_silence_ms` regardless, so 800 would
+    double the delay against 400 for a small further cut in requests.
+    """
+    assert ChunkedStt(FakeTranscriber())._interval_ms == 600
+
+
 async def test_the_chunked_stack_re_sends_the_whole_utterance_each_time() -> None:
     """SPEC A4's cost, made visible. Each partial is a request over everything said
     so far, so the requests grow, and this is the difference the two waterfalls are
