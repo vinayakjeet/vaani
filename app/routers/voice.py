@@ -20,6 +20,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
+import httpx
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -36,7 +37,7 @@ from vaani.protocol import (
     decode,
 )
 from vaani.session import Incoming, VoiceSession
-from vaani.stt import ChunkedStt, GroqWhisper, RecoveringStt
+from vaani.stt import TIMEOUT_SECONDS, ChunkedStt, GroqWhisper, RecoveringStt
 from vaani.tts import VOICE_HI, EdgeTts, FailingOverTts
 from vaani.turn_taking import TurnTaking
 
@@ -162,6 +163,13 @@ def build_backchannel_check(
 # noticed anything, and one who hears it twice running has.
 _fillers = FillerBank()
 
+# One connection to Groq's transcription endpoint, held for the process rather than
+# opened fresh per request. `ChunkedStt` sends five to eleven of these for one utterance
+# by design (SPEC A4), and each one used to pay its own TCP and TLS handshake to a
+# provider that is not local. Safe to share across sessions because only one session
+# runs at a time (`_in_session` above), so the pool is never contended.
+_stt_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
+
 
 async def speak_filler() -> AsyncIterator[bytes]:
     """An acknowledgement from the bank, from disk, with no provider on the path.
@@ -201,7 +209,7 @@ async def voice(socket: WebSocket) -> None:
         return
 
     async with _in_session:
-        transcriber = GroqWhisper()
+        transcriber = GroqWhisper(client=_stt_client)
         # A second voice behind the first. The primary is unofficial with no uptime
         # promise, so this path runs whenever it breaks rather than only on the day
         # somebody remembers to test it.

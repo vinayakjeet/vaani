@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import textwrap
 
+import httpx
 import pytest
 
 from llm.providers.registry import get_provider, load_providers
@@ -54,6 +55,33 @@ def test_load_providers_registers_all_configured_providers(tmp_path):
     providers = load_providers(path)
     assert set(providers) == {"mock", "testprov"}
     assert providers["testprov"].name == "testprov"
+
+
+def test_load_providers_gives_each_real_provider_a_persistent_connection(tmp_path):
+    """Every STT partial and every LLM round used to pay its own TCP and TLS
+    handshake, because `OpenAICompatibleProvider` falls back to opening and closing
+    a fresh client whenever none was given it. Measured live: reusing one connection
+    across a burst of requests to the same provider cut wall time by roughly a third
+    for the same number of requests. `load_providers` is where that connection is
+    handed to every real provider, once, for the process's whole life."""
+    path = tmp_path / "quotas.yaml"
+    path.write_text(
+        textwrap.dedent(
+            """
+            providers:
+              testprov:
+                base_url: "https://example.com/v1"
+                api_key_env: "TESTPROV_API_KEY"
+                default_model: "test-model"
+                reset_window: "per minute"
+                last_verified: "2026-08-04"
+            """
+        )
+    )
+    provider = load_providers(path)["testprov"]
+
+    assert isinstance(provider._client, httpx.AsyncClient)
+    assert not provider._client.is_closed
 
 
 def test_load_providers_always_includes_mock_even_with_empty_file(tmp_path):

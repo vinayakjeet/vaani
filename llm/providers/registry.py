@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import yaml
 from pydantic import BaseModel, ValidationError
 
 from llm.providers.base import (
+    DEFAULT_TIMEOUT,
     OpenAICompatibleProvider,
     Provider,
     default_usage_parser,
@@ -60,6 +62,14 @@ def load_providers(path: Path = DEFAULT_QUOTAS_PATH) -> dict[str, Provider]:
             input_price_per_1m=config.input_price_per_1m,
             output_price_per_1m=config.output_price_per_1m,
             usage_parser=USAGE_PARSERS[config.usage_parser],
+            # One connection pool per provider, held for the process's whole life
+            # rather than opened and closed on every single call. Without this every
+            # STT partial, every LLM round, paid a fresh TCP and TLS handshake to a
+            # provider that is not local, measured live as a meaningful share of a
+            # turn's own latency. Constructing the client here costs nothing until
+            # the first real request dials out, so a provider this process never
+            # calls is idle rather than wasteful.
+            client=httpx.AsyncClient(base_url=config.base_url, timeout=DEFAULT_TIMEOUT),
         )
     return providers
 

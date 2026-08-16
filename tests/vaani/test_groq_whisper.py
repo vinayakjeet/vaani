@@ -116,3 +116,23 @@ async def test_the_audio_is_sent_as_a_wav_file() -> None:
 
     assert b"RIFF" in seen[0]
     assert b"WAVE" in seen[0]
+
+
+async def test_an_injected_client_survives_the_call_for_reuse() -> None:
+    """`ChunkedStt` calls `transcribe` five to eleven times for one utterance, and
+    the whole point of handing it a shared client is that the connection survives
+    between calls. The default path closes what it opened; an injected one must
+    not, or the second partial reopens exactly the connection the first one just
+    proved it did not need to."""
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"text": "haan"}))
+    )
+    impl = GroqWhisper(api_key="test-key", client=client)
+
+    await impl.transcribe(AUDIO)
+    assert not client.is_closed
+
+    # And actually usable a second time, not merely unclosed by accident.
+    second = await impl.transcribe(AUDIO)
+    assert second.text == "haan"
+    assert not client.is_closed

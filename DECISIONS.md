@@ -12,6 +12,56 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: Every provider gets one connection for the process's life, not one per request
+
+**Context:** picking up M0.6, the literal task was narrower than what reading the actual
+request path found. `OpenAICompatibleProvider` and `GroqWhisper` both fall back to a fresh
+`httpx.AsyncClient()`, opened and closed, whenever no client is injected, and nothing in
+`llm/providers/registry.py` or `app/routers/voice.py` ever injected one for the real
+(non-test) providers. Every provider call therefore paid its own TCP and TLS handshake to
+a host that is not local, on every request, for the whole session, not only the first
+turn's. `ChunkedStt` sends five to eleven of these per utterance by design (SPEC A4), so
+this was not a one-time cost at socket-open, it was a per-partial cost repeated all
+session long.
+
+Measured before deciding it mattered: a four-second utterance's seven STT requests, same
+audio, same 600ms interval, took 4.20s wall time with a fresh client each call and 2.57 to
+2.88s reusing one. Roughly a third of the STT stage's wall time, on top of what the
+interval widening the night before already cut, for a change that touches two constructor
+call sites and adds no new request anywhere.
+
+**Decision:** `load_providers` in `llm/providers/registry.py` now constructs one
+`httpx.AsyncClient` per configured provider and passes it in, so every `OpenAICompatibleProvider`
+holds a persistent connection for the process's entire life; `_PROVIDERS` is already a
+module-level singleton built once at import, so this costs nothing extra to wire in. A
+matching `_stt_client` singleton in `app/routers/voice.py` is passed into the one
+`GroqWhisper` a session constructs, covering the chunked partials, the batch fallback, and
+the backchannel check, since all three already share that one instance. Safe across
+sessions despite being one shared object, because `_in_session` already guarantees only one
+session runs at a time, so the connection pool is never contended.
+
+**Alternatives considered:** a throwaway warmup request fired at socket-open, the literal
+reading of M0.6's own text. Rejected because it spends real provider quota, Groq's or
+whichever's, on every accepted connection including ones that never send a frame, which on
+a public endpoint with no rate limiting yet (M3.8 is still open) is quota an uninterested
+visitor or a bot can spend. A persistent client costs nothing until a real request needs
+it and never fires speculatively. Session-scoped clients, opened at socket-accept and
+closed at socket-close rather than process-lifetime singletons, rejected as strictly worse
+for no safety gained: `_in_session` already serialises every session, so a process-wide
+client is exactly as safe and additionally warm for the very first session after a cold
+start, which a session-scoped one is not.
+
+**Consequences:** two tests close the actual gap rather than only asserting the change
+compiles: `test_load_providers_gives_each_real_provider_a_persistent_connection` reads the
+provider's own `_client` attribute after construction, and
+`test_an_injected_client_survives_the_call_for_reuse` calls `GroqWhisper.transcribe` twice
+through one client and asserts it is still open and still usable after both, which is the
+property the whole fix depends on and nothing before this proved. Six providers
+(`gemini`, `groq`, `cerebras`, `openrouter`, `ollama`, `sarvam`) each now hold an idle
+client object at all times regardless of whether this process ever calls them; harmless,
+since construction alone does not dial out and the memory cost of an idle client is
+negligible against the 512MB instance this runs on.
+
 ## 2026-08-17: An unanswered user turn is merged with what follows, not left as a second question
 
 **Context:** live testing kept producing replies that answered only half of what was
