@@ -74,7 +74,7 @@ async def test_a_missing_asset_still_speaks(monkeypatch, tmp_path) -> None:
     every degradation rule in SPEC exists to prevent, and it is worse than a slow
     acknowledgement."""
     import app.routers.voice as router
-    from vaani.fillers import FillerBank
+    from vaani.fillers import FillerBank, Purpose
 
     synthesised: list[str] = []
 
@@ -89,7 +89,44 @@ async def test_a_missing_asset_still_speaks(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(router, "EdgeTts", lambda: Stub())
 
     assert await collect() == [b"synthesised-filler"]
-    assert synthesised == [router.FILLER_TEXT]
+    assert synthesised == [router.FILLER_TEXT[Purpose.THINKING]]
+
+
+async def test_the_resuming_purpose_speaks_a_different_phrase(monkeypatch, tmp_path) -> None:
+    """M2.8. "Ek minute" and "Ji, boliye" are different speech acts, and the on-demand
+    fallback has to say the right one for whichever purpose was actually asked for, not
+    always the thinking one."""
+    import app.routers.voice as router
+    from vaani.fillers import FillerBank, Purpose
+
+    synthesised: list[str] = []
+
+    class Stub:
+        async def synthesize(self, text, voice, index=0):
+            synthesised.append(text)
+            yield b"synthesised-filler"
+
+    monkeypatch.setattr(router, "_fillers", FillerBank(assets=tmp_path))
+    monkeypatch.setattr(router, "EdgeTts", lambda: Stub())
+
+    chunks = [chunk async for chunk in speak_filler(Purpose.RESUMING)]
+
+    assert chunks == [b"synthesised-filler"]
+    assert synthesised == [router.FILLER_TEXT[Purpose.RESUMING]]
+    assert synthesised != [router.FILLER_TEXT[Purpose.THINKING]]
+
+
+async def test_the_resuming_purpose_is_read_from_the_bank_when_present() -> None:
+    """The ordinary path, not only the fallback: a committed `resuming` clip exists
+    and is what actually gets played, the same way the thinking purpose already is."""
+    from vaani.fillers import FillerBank, Purpose
+
+    committed = {clip.read_bytes() for clip in FillerBank().available(Purpose.RESUMING)}
+    assert committed, "no committed resuming clips: run scripts/build_fillers.py"
+
+    chunks = [chunk async for chunk in speak_filler(Purpose.RESUMING)]
+
+    assert b"".join(chunks) in committed
 
 
 @pytest.mark.parametrize("attempt", [1, 2, 3])

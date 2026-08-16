@@ -53,7 +53,12 @@ _in_session = asyncio.Lock()
 # Short, and in Hinglish because the reply will be. It covers the gap when an
 # answer misses the deadline, and it is never counted as the answer's own audio:
 # `TurnClock` keeps that number separately so a filler cannot flatter the target.
-FILLER_TEXT = "Ek minute, dekh raha hoon."
+# One phrase per purpose, since "Ek minute" and "Ji, boliye" are different speech
+# acts and the on-demand fallback must not say the wrong one.
+FILLER_TEXT: dict[Purpose, str] = {
+    Purpose.THINKING: "Ek minute, dekh raha hoon.",
+    Purpose.RESUMING: "Ji, boliye.",
+}
 
 # Synthesised once and committed, rather than spoken on demand.
 #
@@ -171,21 +176,25 @@ _fillers = FillerBank()
 _stt_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
 
 
-async def speak_filler() -> AsyncIterator[bytes]:
+async def speak_filler(purpose: Purpose = Purpose.THINKING) -> AsyncIterator[bytes]:
     """An acknowledgement from the bank, from disk, with no provider on the path.
 
     Never the same one twice running. The deadline is shorter than the endpoint wait, so
     this fires on most turns, and one clip repeating is how an IVR sounds.
+
+    `purpose` picks the speech act: `THINKING` for an ordinary turn, `RESUMING` for one
+    that began by resolving a verified interruption, where "ek minute" would be a stall
+    on an answer the listener has already been told is coming.
 
     Falls back to synthesising if the bank is empty, so a fork that has not run
     `scripts/build_fillers.py` still speaks rather than going silent. That path is slow
     and says so in the log, because a filler that is late is worse than useless: it
     spends the deadline it was meant to cover.
     """
-    clip = _fillers.pick(Purpose.THINKING)
+    clip = _fillers.pick(purpose)
     if clip is None:
-        logger.warning("filler.bank_missing", assets=str(FILLER_AUDIO.parent))
-        async for chunk in EdgeTts().synthesize(FILLER_TEXT, VOICE_HI):
+        logger.warning("filler.bank_missing", purpose=str(purpose), assets=str(FILLER_AUDIO.parent))
+        async for chunk in EdgeTts().synthesize(FILLER_TEXT[purpose], VOICE_HI):
             yield chunk
         return
 

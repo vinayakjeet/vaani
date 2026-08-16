@@ -50,7 +50,7 @@ async def answer(
     yield b"audio"
 
 
-async def filler() -> AsyncIterator[bytes]:
+async def filler(purpose=None) -> AsyncIterator[bytes]:
     yield b"achha"
 
 

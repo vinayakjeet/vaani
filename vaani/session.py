@@ -31,6 +31,7 @@ from llm.types import ProviderError
 from vaani.barge_in import AudioChunk, SpeakingTurn
 from vaani.budget import BargeClock, TurnClock, speak_within
 from vaani.endpoint import Endpointer, MicState
+from vaani.fillers import Purpose
 from vaani.history import Conversation
 from vaani.protocol import FRAME_BYTES, ClientMessage, Frame, ServerMessage
 from vaani.quality import Interactivity, Interruption
@@ -111,7 +112,7 @@ class VoiceSession:
         self,
         transport: Transport,
         answer: Answer,
-        filler: Callable[[], AsyncIterator[bytes]],
+        filler: Callable[[Purpose], AsyncIterator[bytes]],
         endpointer: Endpointer | None = None,
         bytes_per_second: int = 0,
         backchannel: Callable[[bytes], Awaitable[bool]] | None = None,
@@ -361,7 +362,13 @@ class VoiceSession:
 
         if complete and self._frames is not None:
             self._frames.put_nowait(None)
-            await self._begin_answering(silence_ms=silence_ms)
+            # Only this path ever reaches here with `complete=True`: the duration
+            # path passes `complete=False`, since the user is still mid-sentence and
+            # the turn keeps listening rather than re-answering immediately. So a
+            # turn beginning here has always resolved a verified interruption, never
+            # talked over someone still speaking, which is the one hazard that made
+            # this deliberately unbuilt for a session before this one.
+            await self._begin_answering(silence_ms=silence_ms, acknowledge=True)
 
     async def _check_microphone(self) -> None:
         """Say so when no speech is arriving, rather than waiting for an endpoint.
@@ -390,7 +397,9 @@ class VoiceSession:
         self._microphone_reported = None
         self._frames = asyncio.Queue()
 
-    async def _begin_answering(self, silence_ms: int | None = None) -> None:
+    async def _begin_answering(
+        self, silence_ms: int | None = None, *, acknowledge: bool = False
+    ) -> None:
         self._state.to(State.THINKING)
         generation = self._state.generation
         self.quality.turn_started()
@@ -424,13 +433,14 @@ class VoiceSession:
         self._endpointer.reset()
 
         self._speaking = SpeakingTurn(
-            generation=generation, produce=lambda: self._audio(generation)
+            generation=generation,
+            produce=lambda: self._audio(generation, acknowledge=acknowledge),
         )
         self._speaking.start()
         self._state.to(State.SPEAKING)
         self._playback = asyncio.create_task(self._play(self._speaking))
 
-    def _audio(self, generation: int) -> AsyncIterator[bytes]:
+    def _audio(self, generation: int, *, acknowledge: bool = False) -> AsyncIterator[bytes]:
         assert self._frames is not None
         assert self.clock is not None
         answer = self._answer(
@@ -439,7 +449,12 @@ class VoiceSession:
             lambda text: self._report(ServerMessage.TRANSCRIPT, text, generation),
             lambda text: self._report(ServerMessage.REPLY, text, generation),
         )
-        return speak_within(answer, self._filler, self.clock)
+        # "Ek minute" says the answer is coming; "Ji, boliye" says the floor is
+        # theirs. Only a resolved interruption gets the second one, since it is the
+        # only case that knows the turn it is covering for was caused by somebody
+        # being cut off rather than a question asked from silence.
+        purpose = Purpose.RESUMING if acknowledge else Purpose.THINKING
+        return speak_within(answer, lambda: self._filler(purpose), self.clock)
 
     async def _report(self, kind: str, text: str, generation: int) -> None:
         """Text for the client's transcript pane, dropped if the turn is stale.

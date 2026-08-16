@@ -12,6 +12,48 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: A resolved interruption is acknowledged, because the hazard that blocked it cannot reach that path
+
+**Context:** M2.8 had its recording half done since M4.12 and its acknowledgement half
+deliberately left unbuilt, for a stated reason: speaking "haan, boliye" while the user is
+still mid-sentence is the agent talking over them, `agent_interrupted_user`, and the item's
+own note said this is only safe once the utterance has ended. Revisiting it meant
+confirming that boundary in the code rather than trusting the note. `_commit_barge`'s
+`complete=True` branch, the one that starts a new turn immediately, is reachable only from
+`_resolve_barge`, which itself only runs once the interrupting utterance's own silence has
+been detected: the duration path commits with `complete=False` and keeps listening instead.
+So a turn that begins by acknowledging has, by construction, never been triggered while
+somebody was still talking. The hazard is not mitigated here, it does not reach this code
+path at all.
+
+The infrastructure this needed was already sitting unused: `Purpose.RESUMING` and its four
+committed clips exist from M1.13, referenced nowhere.
+
+**Decision:** `VoiceSession`'s `filler` constructor argument changes from a fixed
+`Callable[[], AsyncIterator[bytes]]` to `Callable[[Purpose], AsyncIterator[bytes]]`.
+`_begin_answering` takes a new `acknowledge` keyword, set by `_commit_barge` on the one
+call site that can reach it, and `_audio` picks `Purpose.RESUMING` over `Purpose.THINKING`
+from it. `app/routers/voice.py`'s `speak_filler` takes the same purpose and its on-demand
+synthesis fallback now keys `FILLER_TEXT` by purpose too, so a fork without the bank still
+says the right phrase rather than always the thinking one.
+
+**Alternatives considered:** a second, separate acknowledgement callable on `VoiceSession`
+alongside the existing filler one, rejected as two things to keep synchronised for what is
+the same mechanism asking a different question of the same bank. Deciding the purpose
+inside `speak_filler` itself by inspecting session state, rejected because the filler
+function has no session to inspect by design, an intentional seam that lets it be tested
+and swapped without a `VoiceSession` in scope at all; the caller already knows which turn
+it is starting and is where the decision belongs.
+
+**Consequences:** every test that constructs a `VoiceSession` with a hand-written filler
+fixture needed its signature widened to accept the purpose argument, five call sites across
+`tests/vaani/test_session.py`, `tests/fault/test_silent_mic.py`, `tests/test_redaction.py`,
+`tests/app/test_voice_socket.py`, and `bench/bargein.py`, none of which care what the
+argument is and all of which now accept and ignore it. Two new tests exercise the actual
+property: one drives a verified interruption through a filler that records every purpose it
+was asked for and asserts the second turn's is `RESUMING`, the other drives the duration
+path the same way and asserts `RESUMING` never appears in the record at all.
+
 ## 2026-08-17: Every provider gets one connection for the process's life, not one per request
 
 **Context:** picking up M0.6, the literal task was narrower than what reading the actual

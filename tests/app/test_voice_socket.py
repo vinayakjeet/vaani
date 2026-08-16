@@ -34,7 +34,7 @@ def stub_providers(monkeypatch: pytest.MonkeyPatch) -> None:
             await on_sentence("Haan, aap eligible hain.")
         yield b"audio-bytes"
 
-    async def filler():
+    async def filler(purpose=None):
         yield b"achha"
 
     monkeypatch.setattr(voice, "build_answer", lambda _transcriber, _tts, _history: answer)

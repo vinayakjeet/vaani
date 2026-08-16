@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Callable
 import pytest
 
 from vaani import session as session_module
+from vaani.fillers import Purpose
 from vaani.protocol import ClientMessage, Frame, ServerMessage
 from vaani.session import Incoming, VoiceSession
 from vaani.stt import SttError
@@ -93,8 +94,23 @@ def answering(chunks: list[bytes], delay: float = 0.0):
     return answer
 
 
-async def filler() -> AsyncIterator[bytes]:
+async def filler(purpose=None) -> AsyncIterator[bytes]:
     yield b"achha"
+
+
+def recording_filler():
+    """A filler that remembers which purpose it was asked for each time.
+
+    The default `filler` fixture ignores its argument, which is right for every test
+    that does not care what speech act was chosen. This is for the one that does.
+    """
+    calls: list = []
+
+    async def record(purpose=None) -> AsyncIterator[bytes]:
+        calls.append(purpose)
+        yield b"achha"
+
+    return record, calls
 
 
 def session(
@@ -102,6 +118,7 @@ def session(
     chunks=None,
     delay: float = 0.0,
     backchannel: bool | Exception | None = None,
+    filler=filler,
 ):
     """A session over a fake transport.
 
@@ -307,6 +324,58 @@ async def test_a_short_utterance_that_was_not_a_backchannel_still_interrupts() -
     await stop(task)
 
     assert ServerMessage.RESUME not in transport.kinds()
+
+
+async def test_a_resolved_interruption_acknowledges_rather_than_stalls() -> None:
+    """M2.8. Once the interrupting utterance has ended and the verifier says it was a
+    real question, the turn that answers it opens with "ji, boliye" rather than "ek
+    minute": the listener has already been told the floor is theirs, and repeating the
+    thinking phrase would read as the agent not having heard that its own turn began."""
+    record, calls = recording_filler()
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        *[frame(SPEECH, 1) for _ in range(20)],
+        *[frame(SILENCE, 1) for _ in range(60)],
+        chunks=[b"a1", b"a2", b"a3", b"a4"],
+        delay=0.02,
+        backchannel=False,
+        filler=record,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: voice._state.interrupted_previous), 2.0)
+    await asyncio.wait_for(_until(lambda: len(calls) >= 2), 2.0)
+    await stop(task)
+
+    # The first turn, asked from silence, gets the ordinary one; the second, which
+    # exists because somebody was cut off and re-identified, gets the other.
+    assert calls[0] is Purpose.THINKING
+    assert calls[1] is Purpose.RESUMING
+
+
+async def test_a_duration_interruption_does_not_acknowledge() -> None:
+    """The hazard M2.8 was built around. On the duration path the user is still
+    mid-sentence when the turn is abandoned, so an acknowledgement here would be the
+    agent talking over them: exactly the `agent_interrupted_user` failure M4.12 counts.
+    The turn keeps listening rather than re-answering immediately, so there is no
+    second filler call to mislabel in the first place."""
+    record, calls = recording_filler()
+    voice, transport = session(
+        *speech_then_silence(),
+        AFTER_AUDIO,
+        *[frame(SPEECH, 1) for _ in range(60)],
+        chunks=[b"a1", b"a2", b"a3", b"a4"],
+        delay=0.02,
+        filler=record,
+    )
+
+    task = await run_until_audio(voice, transport)
+    await asyncio.wait_for(_until(lambda: voice._state.interrupted_previous), 2.0)
+    await asyncio.sleep(0.1)
+    await stop(task)
+
+    assert Purpose.RESUMING not in calls
 
 
 async def test_a_recogniser_that_cannot_say_commits_the_interruption() -> None:
@@ -625,7 +694,7 @@ async def test_a_real_filler_clip_pushes_the_answer_past_the_target() -> None:
     assert clip is not None
     chunks = read_chunks(clip, 720)
 
-    async def real_filler() -> AsyncIterator[bytes]:
+    async def real_filler(purpose=None) -> AsyncIterator[bytes]:
         for chunk in chunks:
             yield chunk
 

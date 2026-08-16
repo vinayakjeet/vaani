@@ -696,7 +696,7 @@ async def _answer(
         yield f"chunk{index:04d}".encode() * 8
 
 
-async def _filler() -> AsyncIterator[bytes]:
+async def _filler(purpose=None) -> AsyncIterator[bytes]:
     yield b"ek minute"
 
 
