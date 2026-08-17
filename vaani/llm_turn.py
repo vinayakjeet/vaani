@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 
 import structlog
 
@@ -158,8 +159,14 @@ class StreamedTurn:
         # listener waited for all of them. Time to first token is an event on it
         # rather than the duration, which is how long the model talked for.
         with stage_span(LLM_GENERATE, **{"gen_ai.system": self._provider}) as stage:
-            async for chunk in self._rounds(question, stage, still_current, history):
-                yield chunk
+            # `aclosing`: this generator is itself abandonable (`vaani.sentences`
+            # closes it explicitly rather than trust exhaustion), and being idle
+            # at `yield chunk` when that happens would otherwise leave `_rounds`
+            # suspended mid-round with its provider stream still open.
+            rounds = self._rounds(question, stage, still_current, history)
+            async with aclosing(rounds):
+                async for chunk in rounds:
+                    yield chunk
 
     async def _rounds(
         self,

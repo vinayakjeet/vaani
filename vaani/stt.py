@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from collections import Counter
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -346,11 +347,18 @@ class RecoveringStt:
         final_seen = False
 
         try:
-            async for partial in self._stream.stream(_keeping(frames, buffer)):
-                index = partial.index
-                if partial.final:
-                    final_seen = True
-                yield partial
+            # `aclosing`, because a caller that stops consuming us the moment it
+            # sees `partial.final` (`StreamingPipeline._listen` does exactly that)
+            # abandons this loop mid-iteration. Without it, the inner stream's
+            # `stage_span` is left open across a `yield` with nothing to close it
+            # in this task, and it gets closed later, in whatever context the
+            # garbage collector happens to run in.
+            async with aclosing(self._stream.stream(_keeping(frames, buffer))) as inner:
+                async for partial in inner:
+                    index = partial.index
+                    if partial.final:
+                        final_seen = True
+                    yield partial
         except SttError as exc:
             async for partial in self._recover(frames, buffer, index, Reason.STREAM_FAILED, exc):
                 yield partial

@@ -17,6 +17,7 @@ all represented in the tests:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
+from contextlib import aclosing
 
 # Danda and double danda for Devanagari, then the Latin terminators. A newline
 # is deliberately not a terminator: models emit them inside lists and mid-clause,
@@ -122,15 +123,21 @@ async def from_stream(tokens: AsyncIterator[str]) -> AsyncIterator[str]:
     while the model is still writing sentence three.
     """
     buffer = ""
-    async for token in tokens:
-        buffer += token
-        complete, buffer = split(buffer, final=False)
-        for sentence in complete:
-            yield sentence
-        if len(buffer) >= MAX_BUFFER_CHARS:
-            if buffer.strip():
-                yield buffer.strip()
-            buffer = ""
+    # `aclosing`: `tokens` is `StreamedTurn.run`, which holds its own `stage_span`
+    # open across a `yield`. This generator is itself abandonable (by
+    # `speak_as_they_arrive`, which wraps it the same way), and being idle at one
+    # of the `yield sentence` calls below when that happens would otherwise leave
+    # `tokens` open with nothing to close it.
+    async with aclosing(tokens):
+        async for token in tokens:
+            buffer += token
+            complete, buffer = split(buffer, final=False)
+            for sentence in complete:
+                yield sentence
+            if len(buffer) >= MAX_BUFFER_CHARS:
+                if buffer.strip():
+                    yield buffer.strip()
+                buffer = ""
 
     # The stream has ended, so re-read the remainder knowing nothing more is
     # coming. A trailing "300000." is a sentence now, where a moment ago it could

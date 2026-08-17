@@ -155,6 +155,39 @@ async def test_the_pending_answer_is_not_cancelled_by_the_deadline() -> None:
     assert closed
 
 
+async def test_closing_speak_within_early_stops_the_answer_rather_than_outliving_it() -> None:
+    """Regression for a bug introduced while fixing another one. `speak_within` used
+    to drive `answer` through a dedicated task so its span opens and closes on the
+    same task regardless of how the deadline race times the first chunk, but its own
+    `finally` awaited that task unconditionally rather than cancelling it. A caller
+    closing `speak_within` early, which is what a barge-in does, then blocked until
+    the abandoned answer finished talking to itself instead of actually interrupting
+    anything. `answer` here would hang for an hour if it were only awaited rather than
+    cancelled, so this fails by timing out, not by a wrong value."""
+    closed = False
+
+    async def hangs_after_one_chunk() -> AsyncIterator[bytes]:
+        nonlocal closed
+        try:
+            await asyncio.sleep(0.05)
+            yield b"answer-1"
+            await asyncio.sleep(3600)
+            yield b"answer-2"  # pragma: no cover
+        finally:
+            closed = True
+
+    clock = TurnClock()
+    stream = speak_within(hangs_after_one_chunk(), filler, clock, deadline_ms=10)
+
+    first = await anext(stream)
+    assert first == b"achha"
+    second = await anext(stream)
+    assert second == b"answer-1"
+
+    await asyncio.wait_for(stream.aclose(), timeout=1.0)
+    assert closed
+
+
 async def test_a_failing_answer_still_raises_after_filler() -> None:
     """The filler must not swallow a failure. A turn that says "achha" and then
     nothing is the silence SPEC's degradation rules exist to prevent."""

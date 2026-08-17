@@ -23,6 +23,7 @@ with its own row in the ablation rather than part of this.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import aclosing
 
 import structlog
 
@@ -128,10 +129,19 @@ class StreamingPipeline:
         # the session has been writing into it: the previous turn's reply was committed,
         # truncated or dropped between then and now depending on what was heard.
         replies = self._turn.run(spoken.text, still_current, history=self._history.for_model())
-        async for chunk in speak_as_they_arrive(
+        # `aclosing`, for the same reason as `_listen`'s: this whole method is the
+        # `answer` that `vaani.budget.speak_within` can close early (a barge-in, or
+        # a caller that simply stops reading), and `speak_as_they_arrive` holds a
+        # `stage_span` open across its own `yield`s further down. Being idle at
+        # `yield chunk` below when that happens is enough to abandon it: the
+        # closure reaches this frame, but nothing then tells the generator this
+        # frame is holding onto that it should close too.
+        spoken_audio = speak_as_they_arrive(
             replies, self._tts, self._voice, on_sentence=on_sentence, validate=grounded
-        ):
-            yield chunk
+        )
+        async with aclosing(spoken_audio):
+            async for chunk in spoken_audio:
+                yield chunk
 
     async def _listen(self, frames: AsyncIterator[bytes]) -> str:
         """Transcribe while the user talks, and return the final transcript.
@@ -143,14 +153,23 @@ class StreamingPipeline:
         final: str | None = None
         partials = 0
 
-        async for partial in self._stt.stream(
-            frames_until_endpoint(frames, self._endpointer)
-        ):
-            if partial.final:
-                final = partial.text
-                break
-            partials += 1
-            self._endpointer.note_partial(partial.text)
+        # `aclosing` rather than a bare `async for`, because the loop below breaks
+        # the instant the final partial arrives instead of exhausting the generator.
+        # `ChunkedStt.stream` holds its `stage_span` open across every `yield`, so a
+        # generator abandoned mid-span never runs that span's `__exit__` in the task
+        # that opened it; it runs whenever the garbage collector gets to it, in
+        # whatever context that happens to be, and OpenTelemetry's context token
+        # detach then raises "was created in a different Context". Explicitly
+        # closing here throws `GeneratorExit` at the suspended yield immediately,
+        # in this task, so the span closes where it opened.
+        stream = self._stt.stream(frames_until_endpoint(frames, self._endpointer))
+        async with aclosing(stream):
+            async for partial in stream:
+                if partial.final:
+                    final = partial.text
+                    break
+                partials += 1
+                self._endpointer.note_partial(partial.text)
 
         if not final or not final.strip():
             # Never an empty string onward. A model handed nothing answers something,

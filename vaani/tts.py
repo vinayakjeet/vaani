@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import aclosing
 from enum import StrEnum
 from typing import Protocol
 
@@ -73,24 +74,34 @@ async def speak_as_they_arrive(
     rather than only the milliseconds.
     """
     sentences = 0
-    async for sentence in from_stream(tokens):
-        sentences += 1
+    # `aclosing` at both levels here: `from_stream(tokens)` holds nothing of its
+    # own, but `tokens` underneath it is `StreamedTurn.run`, which holds its own
+    # `stage_span` open across a `yield`, and `tts.synthesize` holds its own
+    # `TTS_SYNTHESIZE` span the same way. Either loop below can be abandoned by
+    # this generator's own caller; without this, being idle at `yield chunk`
+    # when that happens abandons whichever of the two was mid-flight.
+    sentence_stream = from_stream(tokens)
+    async with aclosing(sentence_stream):
+        async for sentence in sentence_stream:
+            sentences += 1
 
-        # The guardrail sits here rather than after synthesis, which is the only place it
-        # can sit. Audio cannot be un-said, so a check that runs on a finished reply is a
-        # check that runs after the wrong number has been spoken.
-        spoken = sentence if validate is None else validate(sentence)
-        if not spoken.strip():
-            continue
+            # The guardrail sits here rather than after synthesis, which is the only place it
+            # can sit. Audio cannot be un-said, so a check that runs on a finished reply is a
+            # check that runs after the wrong number has been spoken.
+            spoken = sentence if validate is None else validate(sentence)
+            if not spoken.strip():
+                continue
 
-        if on_sentence is not None:
-            # Reported before synthesis, so the transcript pane shows the words at
-            # the moment they exist rather than after the audio for them arrives. The
-            # validated text, not the model's, so the pane cannot show a figure the
-            # listener was deliberately not told.
-            await on_sentence(spoken)
-        async for chunk in tts.synthesize(spoken, voice, index=sentences):
-            yield chunk
+            if on_sentence is not None:
+                # Reported before synthesis, so the transcript pane shows the words at
+                # the moment they exist rather than after the audio for them arrives. The
+                # validated text, not the model's, so the pane cannot show a figure the
+                # listener was deliberately not told.
+                await on_sentence(spoken)
+            spoken_chunks = tts.synthesize(spoken, voice, index=sentences)
+            async with aclosing(spoken_chunks):
+                async for chunk in spoken_chunks:
+                    yield chunk
 
     logger.info("tts.stream_done", provider=tts.name, sentences=sentences)
 
@@ -259,16 +270,26 @@ class FailingOverTts:
     async def synthesize(
         self, text: str, voice: str = VOICE_HI, index: int = 0
     ) -> AsyncIterator[bytes]:
+        # `aclosing` at each delegation below: every branch hands off to a
+        # provider's `synthesize`, which holds its own `TTS_SYNTHESIZE` span open
+        # across a `yield`. This generator is itself abandonable by whatever is
+        # reading it (`speak_as_they_arrive` does, on an interruption), and being
+        # idle at one of the `yield chunk` calls here when that happens would
+        # otherwise leave the provider's span with nothing to close it.
         if self._failed_over:
-            async for chunk in self._fallback.synthesize(text, self._fallback_voice, index):
-                yield chunk
+            fallback_chunks = self._fallback.synthesize(text, self._fallback_voice, index)
+            async with aclosing(fallback_chunks):
+                async for chunk in fallback_chunks:
+                    yield chunk
             return
 
         spoken = 0
+        primary_chunks = self._primary.synthesize(text, voice, index)
         try:
-            async for chunk in self._primary.synthesize(text, voice, index):
-                spoken += 1
-                yield chunk
+            async with aclosing(primary_chunks):
+                async for chunk in primary_chunks:
+                    spoken += 1
+                    yield chunk
             return
         except TtsError:
             reason = (
@@ -288,5 +309,7 @@ class FailingOverTts:
                 sentence_index=index,
             )
 
-        async for chunk in self._fallback.synthesize(text, self._fallback_voice, index):
-            yield chunk
+        fallback_chunks = self._fallback.synthesize(text, self._fallback_voice, index)
+        async with aclosing(fallback_chunks):
+            async for chunk in fallback_chunks:
+                yield chunk

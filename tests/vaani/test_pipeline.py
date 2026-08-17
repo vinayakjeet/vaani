@@ -17,7 +17,13 @@ from .test_streamed_speech import RecordingTts
 
 
 class ScriptedStt:
-    """Emits scripted partials, then a final, recording the frames it was given."""
+    """Emits scripted partials, then a final, recording the frames it was given.
+
+    Also records whether its own `stream` generator was closed. `_listen` stops
+    reading the instant the final partial arrives, one item before this generator
+    would end on its own, so the only way that close happens is if `_listen`
+    asks for it explicitly.
+    """
 
     name = "scripted"
     streaming = True
@@ -26,15 +32,19 @@ class ScriptedStt:
         self._texts = texts
         self._final = final if final is not None else (texts[-1] if texts else "")
         self.frames_seen = 0
+        self.closed = False
 
     async def stream(self, frames: AsyncIterator[bytes]) -> AsyncIterator[Partial]:
-        index = 0
-        async for _frame in frames:
-            self.frames_seen += 1
-            if index < len(self._texts):
-                yield Partial(text=self._texts[index], final=False, index=index + 1)
-                index += 1
-        yield Partial(text=self._final, final=True, index=index + 1)
+        try:
+            index = 0
+            async for _frame in frames:
+                self.frames_seen += 1
+                if index < len(self._texts):
+                    yield Partial(text=self._texts[index], final=False, index=index + 1)
+                    index += 1
+            yield Partial(text=self._final, final=True, index=index + 1)
+        finally:
+            self.closed = True
 
 
 async def frames(*sequence: bytes) -> AsyncIterator[bytes]:
@@ -271,3 +281,20 @@ async def test_confirmation_is_an_arm_that_can_be_switched_off() -> None:
         pass
 
     assert tts.said == ["Aap eligible hain."]
+
+
+async def test_listen_closes_the_stt_stream_rather_than_abandoning_it_at_the_final_partial() -> None:
+    """`_listen` breaks the instant the final partial arrives, one item before
+    `ScriptedStt.stream` would end on its own. That generator holds a `stage_span`
+    open across every `yield` in the real `ChunkedStt`, and a generator abandoned
+    mid-span closes wherever the garbage collector gets to it rather than in the
+    task that opened it, which is the bug `aclosing` in `_listen` exists to close.
+    Here, closed synchronously and observably: `ScriptedStt.closed` is true the
+    moment `_listen` returns, not eventually."""
+    stt = ScriptedStt("kisi", final="kisi yojana ke baare mein")
+    flow, _tts = pipeline(stt, text("koi jawab"))
+
+    heard = await flow._listen(frames(SPEECH, SPEECH))
+
+    assert heard == "kisi yojana ke baare mein"
+    assert stt.closed

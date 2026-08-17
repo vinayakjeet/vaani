@@ -25,6 +25,7 @@ happens to find out.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -217,6 +218,45 @@ def remaining_ms(clock: TurnClock, deadline_ms: int) -> float:
     return max(0.0, deadline_ms - clock.elapsed_ms())
 
 
+_DONE = object()
+
+
+async def _drive(answer: AsyncIterator[bytes], queue: asyncio.Queue[object]) -> None:
+    """Pull `answer` to exhaustion on this task, forwarding every chunk.
+
+    A dedicated task for `answer`'s whole lifetime, not just its first chunk. The
+    stages `answer` is built from (`vaani.llm_turn`, `vaani.tts`) hold an
+    OpenTelemetry span open across their own `yield`s, and OpenTelemetry's context
+    token is only valid to detach in the task that attached it. The previous
+    version raced only the first `anext()` in its own task via `ensure_future` and
+    then drove the rest of the generator from the caller's task, which opened the
+    span in one task and closed it in another on every turn: harmless to the
+    answer itself, but it corrupted the tracer's context stack, and enough turns
+    in a row made spans stop recording at all with no exception anywhere in this
+    module. Driving the whole generator from one task, start to finish, is what
+    keeps attach and detach in the same place.
+    """
+    try:
+        async for chunk in answer:
+            await queue.put(chunk)
+    except Exception as exc:
+        await queue.put(exc)
+    finally:
+        # `speak_within` cancels this task on an early exit rather than waiting
+        # for `answer` to end on its own (see there). Cancellation lands wherever
+        # this task happened to be suspended, and `await queue.put(chunk)` is a
+        # real checkpoint even on an unbounded queue: caught there, `answer` has
+        # already produced its chunk and returned control here, so it is idle at
+        # a `yield`, not inside an `await` `CancelledError` could reach. Nothing
+        # then closes it, which is the same abandoned-generator shape this
+        # function exists to fix, one level further in. `aclose` is a no-op on a
+        # generator that already finished, so it costs nothing on the ordinary
+        # path.
+        with contextlib.suppress(asyncio.CancelledError):
+            await answer.aclose()
+        await queue.put(_DONE)
+
+
 async def speak_within(
     answer: AsyncIterator[bytes],
     filler: Callable[[], AsyncIterator[bytes]],
@@ -234,7 +274,9 @@ async def speak_within(
     Cancelling `anext` would close the generator mid-flight and throw away the work
     already done, which is the opposite of what a deadline is for.
     """
-    first = asyncio.ensure_future(anext(answer, None))
+    queue: asyncio.Queue[object] = asyncio.Queue()
+    driver = asyncio.ensure_future(_drive(answer, queue))
+    first = asyncio.ensure_future(queue.get())
     done, _pending = await asyncio.wait([first], timeout=remaining_ms(clock, deadline_ms) / 1000)
 
     if not done:
@@ -246,16 +288,41 @@ async def speak_within(
             clock.mark_audio(is_answer=False)
             yield chunk
 
-    chunk = await first
-    if chunk is None:
-        # The answer produced nothing at all. Whatever the filler said, the turn
-        # has no reply in it, and the caller has to say so rather than let the
-        # acknowledgement stand in for one.
-        return
+    try:
+        item = await first
+        if item is _DONE:
+            # The answer produced nothing at all. Whatever the filler said, the turn
+            # has no reply in it, and the caller has to say so rather than let the
+            # acknowledgement stand in for one.
+            return
+        if isinstance(item, Exception):
+            raise item
 
-    clock.mark_audio(is_answer=True)
-    yield chunk
-
-    async for chunk in answer:
         clock.mark_audio(is_answer=True)
-        yield chunk
+        yield item
+
+        while True:
+            item = await queue.get()
+            if item is _DONE:
+                return
+            if isinstance(item, Exception):
+                raise item
+            clock.mark_audio(is_answer=True)
+            yield item
+    finally:
+        # Reached on ordinary exhaustion, where `driver` is already done and this
+        # is a formality, and also on this generator being closed early by an
+        # interruption, where it is not. `answer` is never abandoned on purpose by
+        # this function, but the caller closing `speak_within` itself is a
+        # different decision than this function makes, and the first version of
+        # this awaited `driver` unconditionally: a barge-in tore down the consumer
+        # side, `driver` kept running because nothing had told it to stop, and the
+        # turn's audio task sat blocked on `await driver` for however long the
+        # rest of the answer took to finish talking to itself. Cancelling here is
+        # what closes `answer` in the task that opened it, which is the property
+        # this whole rewrite exists for, and it is also what makes an interruption
+        # interrupt again.
+        if not driver.done():
+            driver.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await driver
