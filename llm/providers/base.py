@@ -154,6 +154,7 @@ class OpenAICompatibleProvider:
         base_url: str,
         api_key_env: str,
         default_model: str,
+        default_params: dict[str, object] | None = None,
         input_price_per_1m: float | None = None,
         output_price_per_1m: float | None = None,
         usage_parser: Callable[[dict], tuple[int | None, int | None]] = default_usage_parser,
@@ -163,6 +164,7 @@ class OpenAICompatibleProvider:
         self._base_url = base_url.rstrip("/")
         self._api_key_env = api_key_env
         self._default_model = default_model
+        self._default_params = default_params or {}
         self._input_price_per_1m = input_price_per_1m
         self._output_price_per_1m = output_price_per_1m
         self._usage_parser = usage_parser
@@ -193,6 +195,7 @@ class OpenAICompatibleProvider:
         payload = {
             "model": resolved_model,
             "messages": [m.model_dump(exclude_none=True) for m in messages],
+            **self._default_params,
             **kwargs,
         }
         headers = {"Authorization": f"Bearer {api_key}"}
@@ -264,6 +267,7 @@ class OpenAICompatibleProvider:
             # 4xx with the body attached, which is diagnosable; pass
             # `stream_options=None` to drop it for one that does.
             "stream_options": {"include_usage": True},
+            **self._default_params,
             **kwargs,
         }
         if payload.get("stream_options") is None:
@@ -394,6 +398,17 @@ class OpenAICompatibleProvider:
             # waterfall can both tell it apart from a clean finish.
             logger.warning("provider.stream.truncated", provider=self.name)
             finish_reason = "truncated"
+
+        if finish_reason == "length" and not produced_text and not fragments:
+            # A reasoning model can spend its whole token budget on the hidden
+            # reasoning channel and never reach an answer or a tool call. Neither
+            # guard above catches this: the stream terminated cleanly and carries
+            # a real finish reason, so from here it looks exactly like an
+            # ordinary completion that simply had nothing to say. Left alone the
+            # caller gets a `StreamCompleted` with no `TextChunk` and no
+            # `ToolCallsRequested` ever yielded, which is the same silent, empty
+            # reply the guard above exists to catch, from a different cause.
+            raise ProviderError(f"{self.name}: length limit reached before any content")
 
         if fragments:
             yield ToolCallsRequested(

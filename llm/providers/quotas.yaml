@@ -22,12 +22,28 @@ providers:
   groq:
     base_url: "https://api.groq.com/openai/v1"
     api_key_env: "GROQ_API_KEY"
-    default_model: "llama-3.3-70b-versatile"
+    # llama-3.3-70b-versatile is gone from Groq's catalog as of this check: the
+    # chat endpoint returns 404 model_not_found, confirmed against
+    # /openai/v1/models returning no llama chat model at all, only the
+    # prompt-guard pair. openai/gpt-oss-120b is the closest capability match
+    # still offered and confirmed live: tool calling produces correctly
+    # structured calls with real arguments. See DECISIONS.
+    default_model: "openai/gpt-oss-120b"
+    # gpt-oss is a reasoning model: real content is preceded by a hidden
+    # `reasoning` channel that is not the answer and is not free. At the
+    # default effort a 60-token budget was spent entirely on reasoning and
+    # produced zero content (`finish_reason: length`, `reasoning_tokens: 58`
+    # of `completion_tokens: 60`), confirmed live. `low` keeps that channel
+    # short enough that content starts promptly, which is the whole metric
+    # this project optimises for, and tool calls still come back correctly
+    # structured at this setting.
+    default_params:
+      reasoning_effort: "low"
     rpm_limit: 30
     reset_window: "per minute"
     input_price_per_1m: 0.0
     output_price_per_1m: 0.0
-    last_verified: "2026-08-04"
+    last_verified: "2026-08-17"
 
   cerebras:
     base_url: "https://api.cerebras.ai/v1"

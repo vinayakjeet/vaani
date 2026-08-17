@@ -35,6 +35,12 @@ class ProviderQuotaConfig(BaseModel):
     output_price_per_1m: float | None = None
     usage_parser: str = "default"
     last_verified: str
+    # Merged into every request body for this provider, before any per-call
+    # kwarg so a call site can still override. Exists for `reasoning_effort`:
+    # a reasoning model can spend its whole token budget on the hidden
+    # reasoning channel and never reach the answer, which is a provider quirk,
+    # not something `vaani.llm_turn` should know to ask for.
+    default_params: dict[str, object] = {}
 
 
 def load_providers(path: Path = DEFAULT_QUOTAS_PATH) -> dict[str, Provider]:
@@ -59,6 +65,7 @@ def load_providers(path: Path = DEFAULT_QUOTAS_PATH) -> dict[str, Provider]:
             base_url=config.base_url,
             api_key_env=config.api_key_env,
             default_model=config.default_model,
+            default_params=config.default_params,
             input_price_per_1m=config.input_price_per_1m,
             output_price_per_1m=config.output_price_per_1m,
             usage_parser=USAGE_PARSERS[config.usage_parser],

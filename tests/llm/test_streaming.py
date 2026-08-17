@@ -315,6 +315,71 @@ async def test_usage_options_can_be_dropped_for_a_provider_that_rejects_them() -
     assert "stream_options" not in seen[0]
 
 
+async def test_default_params_are_merged_into_every_request() -> None:
+    """`reasoning_effort` for Groq's gpt-oss models is the case this exists for:
+    a provider-scoped default that every call needs, not something each call
+    site should have to remember to ask for."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, content=sse("data: [DONE]"))
+
+    impl = provider(handler, default_params={"reasoning_effort": "low"})
+    await drain(impl.stream_completion([]))
+
+    assert seen[0]["reasoning_effort"] == "low"
+
+
+async def test_a_call_site_kwarg_overrides_a_default_param() -> None:
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, content=sse("data: [DONE]"))
+
+    impl = provider(handler, default_params={"reasoning_effort": "low"})
+    await drain(impl.stream_completion([], reasoning_effort="high"))
+
+    assert seen[0]["reasoning_effort"] == "high"
+
+
+async def test_a_reasoning_budget_spent_with_no_content_is_a_failure_not_a_silent_reply() -> None:
+    """A reasoning model can spend its whole token budget on the hidden reasoning
+    channel and never reach an answer or a tool call. `finish_reason: length`
+    with real content or a tool call already in hand is an ordinary truncation;
+    this is the same shape as a dropped connection, from a different cause, and
+    the same guard has to catch it or the turn ends having said nothing with
+    nothing in the log to say why."""
+    body = sse(
+        chunk(role="assistant", content=""),
+        chunk(reasoning="thinking and thinking"),
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "length"}]}),
+        "data: [DONE]",
+    )
+
+    with pytest.raises(ProviderError, match="length limit"):
+        await drain(provider(streaming(body)).stream_completion([]))
+
+
+async def test_length_with_real_content_already_delivered_is_not_raised() -> None:
+    """The new guard is for zero content, not for any truncation. Text already
+    spoken must stay delivered, which is the property `provider.stream.truncated`
+    already protects; this test is what stops the new guard from widening past it."""
+    body = sse(
+        chunk(content="Aap eligible"),
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "length"}]}),
+        "data: [DONE]",
+    )
+
+    events = await drain(provider(streaming(body)).stream_completion([]))
+
+    assert [e.text for e in events if isinstance(e, TextChunk)] == ["Aap eligible"]
+    completed = events[-1]
+    assert isinstance(completed, StreamCompleted)
+    assert completed.finish_reason == "length"
+
+
 class FlakyProvider:
     """Fails a set number of times before the first event, then streams."""
 

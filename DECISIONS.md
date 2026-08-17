@@ -12,6 +12,150 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: llama-3.3-70b-versatile is gone from Groq; moved to openai/gpt-oss-120b at low reasoning effort
+
+**Context:** found live while resuming M4.3 measurement: every chat completion against
+`llama-3.3-70b-versatile` returned HTTP 404, `model_not_found`. `GET /openai/v1/models`
+confirmed it, listing no Llama chat model at all, only the two prompt-guard classifiers.
+This is the model every turn of the deployed service uses; the live app was broken by a
+provider-side catalog change, not by anything in this repo.
+
+**Decision:** `openai/gpt-oss-120b`, the closest capability match still on the account and
+verified live: correct streaming, correct structured tool calls with real arguments parsed
+from a Hindi eligibility question. `llm/providers/quotas.yaml` now carries a
+`default_params` field per provider, merged into every request body before any per-call
+kwarg, because this model needed one: it is a reasoning model, and at the default effort a
+60-token budget was spent entirely on the hidden reasoning channel and produced zero
+content, confirmed live (`finish_reason: length`, `reasoning_tokens: 58` of
+`completion_tokens: 60`). `reasoning_effort: "low"` fixed it, confirmed live with both a
+plain reply and a tool call, and low effort is also the right default on its own merits:
+every reasoning token spent before the first content token is time this project exists to
+remove, and eligibility tool-calling does not need deep chain-of-thought to pick a scheme
+id.
+
+A second fix rides along, general rather than specific to this model swap. Any reasoning
+model can spend its whole budget on the hidden channel with nothing left for an answer,
+and the existing stream parser had no guard for it: `finish_reason: length` with zero
+content and zero tool calls looks exactly like an ordinary, clean completion that had
+nothing to say, `StreamCompleted` fires, and `_rounds` returns having yielded nothing, the
+same silent empty reply this project has already found and fixed once from a different
+cause tonight. `llm/providers/base.py`'s `_events` now raises `ProviderError` for that
+specific shape, leaving every other truncation (real content already delivered, or a tool
+call already assembled) untouched, tested in both directions.
+
+**Alternatives considered:** `openai/gpt-oss-20b`, smaller and likely faster, not chosen
+without a real comparison; a candidate for M4's own measurement rather than a guess made
+under the pressure of a broken live service. `qwen/qwen3.6-27b`, also present on the
+account and also plausibly a reasoning model with the same hazard, not verified tonight
+and not chosen for the same reason. Raising `max_tokens` instead of setting
+`reasoning_effort`, rejected because it does not bound the failure, only makes it rarer:
+a harder question could still spend an arbitrarily large budget reasoning and never answer,
+where a low reasoning effort setting keeps the channel short by design. Not adding the
+`ProviderError` guard and calling the model swap alone sufficient, rejected on the same
+reasoning `budget.py`'s own decision this session gives: the fix that only papers over the
+one failure observed leaves the general shape of it live for the next provider change to
+find again.
+
+**Consequences:** `cerebras`'s and `openrouter`'s configured models were not re-verified
+tonight; the same catalog-drift risk applies to them and neither is on the path this fix
+needed to unblock. `default_params` is now a real, tested seam in the provider config, so
+the next provider-specific request quirk has somewhere to live that is not a hardcoded
+kwarg in `vaani/llm_turn.py`. Every live number in tonight's M4.3 run and everything after
+it in M4 and M5 is dated against this model, not the one SPEC and BACKLOG still name in
+older entries; a reader comparing this project's numbers to a Llama-3.3 benchmark is
+comparing against a model this service no longer runs.
+
+## 2026-08-17: An abandoned generator closes in whichever task garbage collects it, not the one that opened it
+
+**Context:** found while running `bench/waterfall.py` across the full twenty-utterance
+corpus for the first time. A single hand-picked entry measured cleanly; the full run
+reported empty transcripts and zero reply text for every turn, with `llm.generate` and
+`tts.synthesize` missing from the trace entirely by the last few turns. The proximate
+symptom was `ValueError: ... was created in a different Context`, logged from inside
+OpenTelemetry's own `context.detach`, and swallowed there rather than raised, so nothing
+upstream ever saw it fail.
+
+Every stage span in this pipeline (`STT_STREAM`, `LLM_GENERATE`, `TTS_SYNTHESIZE`) is a
+`with stage_span(...)` block held open across the generator's own `yield`. That is
+deliberate and correct for a generator that runs to exhaustion. It is not correct for one
+that gets abandoned: `StreamingPipeline._listen` stops reading `ChunkedStt.stream` the
+instant the final partial arrives, `bench/waterfall.py` cancels the whole session task
+once a turn's audio has been sent, and `vaani.budget.speak_within` can be closed early by
+a barge-in. An async generator left suspended mid-span does not close when its last
+reader stops calling `__anext__`; it closes whenever Python's garbage collector or
+asyncio's own asyncgen finalizer gets around to it, and that runs in a fresh
+`contextvars.Context`, not the one the span was opened in. OpenTelemetry's context token
+is only valid to detach in the context that attached it, so that later close fails, is
+logged and discarded, and the span it belonged to never reaches the exporter. Enough of
+these in a row corrupts the tracer's own context stack badly enough that unrelated spans
+downstream stop recording too, which is what made the full run look so much worse than
+the single-entry smoke test: one leak is noise, twenty compound.
+
+A second, independent bug was layered on top while fixing the first. `speak_within` raced
+only the first chunk of the answer against the filler deadline, via
+`asyncio.ensure_future(anext(answer, None))`, then drove every chunk after that through a
+plain `async for` on the caller's own task. That is the same shape of bug one level up:
+the answer generator's span opens on whichever task ran its first `__anext__` and closes
+on whichever task happened to be driving it when the generator finally exhausted, and
+those are not reliably the same task. The obvious fix, one dedicated task driving `answer`
+for its whole life, introduced a third bug: the task was awaited unconditionally in
+`speak_within`'s `finally`, so closing `speak_within` early (an interruption) no longer
+stopped `answer`, it just blocked the caller until the abandoned answer finished talking
+to itself.
+
+**Decision:** every generator in the pipeline that delegates to another async generator
+via `async for x in inner(): yield x` now does so inside `contextlib.aclosing(inner())`.
+Fixed at each hop: `StreamingPipeline._listen` and `RecoveringStt.stream` (both flagged in
+the summary written before this session resumed), and, found while tracing the remaining
+leak with the actual attaching and detaching task recorded on the token, four more layers
+`_listen`'s own consumer chain runs through: `StreamingPipeline.run`'s consumption of
+`speak_as_they_arrive`, `speak_as_they_arrive`'s consumption of both `from_stream` and
+`tts.synthesize`, `from_stream`'s consumption of its `tokens` parameter, `FailingOverTts.
+synthesize`'s consumption of whichever provider is live, and `StreamedTurn.run`'s
+consumption of `_rounds`. `vaani.budget.speak_within` was rewritten around a dedicated
+`_drive` task that owns `answer`'s entire lifetime and forwards chunks through a queue,
+so the span always opens and closes on the same task regardless of how the caller times
+the first chunk against the filler deadline; `_drive`'s own `finally` explicitly closes
+`answer` too, since a task cancelled between two chunks (idle at a `yield`, not inside an
+`await`) is exactly the same abandonment shape one level further in. `speak_within`'s
+`finally` cancels `_drive` rather than awaiting it unconditionally, so an early close
+actually stops the answer instead of outliving the thing that abandoned it.
+
+A third, unrelated bug surfaced once the first two stopped hiding it: two of the twenty
+corpus utterances are Devanagari script, and `bench/waterfall.py` had no encoding of its
+own. Windows' default stream encoding when stdout is redirected rather than a real
+console is the ANSI code page, which cannot represent Devanagari, so a log line
+containing it raised `UnicodeEncodeError` from inside the session's own error-recovery
+logging, which is a worse failure than the one it was trying to report. `bench/
+waterfall.py` now reconfigures `sys.stdout`/`sys.stderr` to UTF-8 at the top when they are
+not already, so a run of this script means the same thing on Windows as anywhere else.
+
+**Alternatives considered:** catching and swallowing the context-detach `ValueError`
+specifically, rejected because it treats the exporter losing spans as an acceptable
+outcome rather than the bug it is, and does nothing about the resources (an open httpx
+stream, a live Groq connection) the abandoned generator was still holding. Making
+`stage_span` itself defensive about which context it detaches in, rejected as papering
+over a real generator-lifetime bug at the one place that cannot tell whether the
+generator was abandoned on purpose; `aclosing` fixes it at the point that has that
+information; `stage_span` stays a plain, correct context manager. Leaving `speak_within`
+awaiting `_drive` unconditionally and calling it fixed once the span leak stopped,
+rejected after actually testing a barge-in against it and finding a turn that never
+recovered until the abandoned answer finished on its own, which is the exact class of bug
+this project's own LEARNING file (Spanlight's) says a green test suite will not catch on
+its own.
+
+**Consequences:** the full corpus run through `bench/waterfall.py` now reports zero
+context-detach errors and zero encoding failures across repeated full passes, verified
+directly by tracing which task attached and which task detached each context token, not
+inferred from the absence of a log line. The remaining reason a full run can still show
+empty replies is Groq's own per-account rate limit, tripped by this session's own repeated
+testing (a live `RateLimitError` carried a 344 second `retry_after`), which is a real
+quota constraint stated here rather than mistaken for a code defect a second time. Every
+delegation-style generator added to this pipeline from here needs the same `aclosing`
+treatment the moment it can hold a resource across a `yield`; nothing in the type signature
+of an async generator marks that it needs one, so this is a pattern to watch for by hand,
+not something a test can enforce structurally.
+
 ## 2026-08-17: The fixed corpus is synthesised, stated as a limitation, not passed off as recorded
 
 **Context:** M4.2 and SPEC A8 both ask for the same thing: twenty fixed utterances, used
