@@ -12,6 +12,51 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: A disconnect mid-reply used to commit the whole reply as heard
+
+**Context:** found writing M3.6's own test. `_play`'s `finally` decides whether to commit
+a reply to history by checking `self._state.state is State.SPEAKING`, on the reasoning
+that an interruption has already moved the state away by the time `_play` gets there.
+That is true for `_interrupt`, which changes the state before it cancels playback, on
+purpose, recorded in its own docstring. `run`'s own cleanup on a disconnect does not: it
+calls `_stop_speaking` directly, and at that moment the state is still SPEAKING because
+nothing else has touched it, which reads at `_play`'s finally exactly like reaching the
+end on purpose. A turn cut off after one chunk of four was committed to history as the
+whole reply, delivered.
+
+The deeper reason this survived past the design that was meant to prevent it:
+`SpeakingTurn.chunks()` delivers the same `None` sentinel whether `_pump` reached the end
+of `answer` or was cancelled, deliberately, so a consumer's `async for` sees an ordinary
+end of iteration either way. That is correct for `chunks()` itself, which only promises
+audio in order. It means `_play`'s own loop finishing cannot be used as evidence of which
+one happened, and nothing did.
+
+**Decision:** `SpeakingTurn` gained a `cancelled` property, `self._task is not None and
+self._task.cancelled()`, the one signal that actually distinguishes the two: asyncio
+already tracks it on the task, `_pump`'s `except CancelledError: raise` is what leaves it
+set, and no new state needs inventing. `_play`'s finally now requires `not
+speaking.cancelled` in addition to the existing state check, so a disconnect stops
+committing.
+
+**Alternatives considered:** having `_pump` raise instead of delivering `None` on the
+cancelled path, so `chunks()`'s own iterator would tell `_play` directly, rejected because
+`chunks()`'s current contract, "ending when production finishes or is cancelled" per its
+own docstring, is relied on by `_interrupt`, and changing it to raise on cancellation would
+turn every existing interruption into an exception `_play` has to specifically not report
+as a playback failure, trading one silent case for a noisier one elsewhere. Checking
+`self._state.state` alone and accepting the disconnect gap, rejected once a test could
+demonstrate it: M3.6's own acceptance is that an abandoned turn is recorded as abandoned,
+and this was recording it as delivered.
+
+**Consequences:** `tests/fault/test_disconnect.py` is the file M3.6 asked for, five tests,
+including one that pins the opposite failure mode: a turn nothing interrupts must still
+commit, so the fix for a false commit cannot become a false non-commit. `bench/waterfall.py`
+had a related, narrower bug from the same investigation: `one_turn`'s own `wait_for`
+raising `TimeoutError` skipped its `task.cancel()` entirely, leaving a session task
+orphaned for however long its own retry loop took to give up, live once for 45 minutes.
+Wrapped in `try/finally` there too, and a turn that times out is now recorded rather than
+crashing the other nineteen.
+
 ## 2026-08-17: llama-3.3-70b-versatile is gone from Groq; moved to openai/gpt-oss-120b at low reasoning effort
 
 **Context:** found live while resuming M4.3 measurement: every chat completion against

@@ -71,6 +71,19 @@ class SpeakingTurn:
         return self._task is not None and not self._task.done()
 
     @property
+    def cancelled(self) -> bool:
+        """Whether production was stopped rather than reaching its own end.
+
+        `chunks()` cannot tell a caller this on its own: `_pump` delivers the
+        same `None` sentinel either way, deliberately, so a consumer's `async
+        for` sees an ordinary end of iteration whether production finished or
+        was cut off. That is right for `chunks()` itself, which only promises
+        audio in order; it is wrong for a caller that needs to know which one
+        happened, and asking `chunks()`'s own iterator cannot answer it.
+        """
+        return self._task is not None and self._task.cancelled()
+
+    @property
     def queued(self) -> int:
         return self._queue.qsize()
 

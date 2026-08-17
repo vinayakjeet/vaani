@@ -640,10 +640,16 @@ class VoiceSession:
                 }
             )
         finally:
-            if self._state.state is State.SPEAKING:
-                # Reached only when playback ran to the end, since an interruption has
-                # already moved the machine out of SPEAKING. So this is the one place that
-                # can say a reply was delivered whole, which is what a recovery means.
+            if not speaking.cancelled and self._state.state is State.SPEAKING:
+                # `speaking.cancelled` first, because `chunks()` delivers the same
+                # `None` sentinel whether production reached its own end or was cut
+                # off, so this loop finishing is not by itself evidence of which one
+                # happened. The state check stays too, since it is what actually
+                # distinguishes an interruption, which has already moved the machine
+                # out of SPEAKING by the time this runs. A disconnect cancels
+                # `speaking` directly without touching the state first, which used to
+                # read here as "reached the end", and a turn cut off after one chunk
+                # of four was committed to history as the whole reply, delivered.
                 self.quality.response_delivered()
                 # The turn ran to the end, so all of its text was heard and enters the
                 # record whole. Reached only here: an interruption has already moved the
