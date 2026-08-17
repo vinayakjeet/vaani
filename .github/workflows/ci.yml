@@ -22,5 +22,20 @@ jobs:
       - name: Lint (ruff)
         run: uv run ruff check .
 
+      # Silero and smart-turn are optional arms, not committed, and the tests for
+      # them skip rather than fail when the weights are absent, which was every CI
+      # run: the arms were exercised only where they were also being used, the
+      # shape of a check that agrees with whoever ran it. Cached on the pinned
+      # checksums in vaani/models.py, so a version bump there busts the cache
+      # rather than the workflow silently testing stale weights forever.
+      - name: Cache optional model weights
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-${{ hashFiles('vaani/models.py') }}
+
+      - name: Fetch optional model weights
+        run: uv run python scripts/fetch_models.py
+
       - name: Test (pytest)
         run: uv run pytest
