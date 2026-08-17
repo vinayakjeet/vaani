@@ -12,6 +12,28 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: No rate limiting beyond the single-session lock
+
+**Context:** M3.8's own title names "rate limiting and refusal beyond one session." The
+refusal half already worked and is now tested (`tests/app/test_concurrency_refusal.py`);
+rate limiting the refusal path itself was the remaining open question.
+
+**Decision:** not built. The single-session lock already bounds concurrent backend work,
+every provider call and every compute path, to exactly one session at a time, and a
+refused connection costs a socket accept and one JSON message, nothing a rate limit would
+meaningfully protect. Adding one anyway means picking a number, requests per minute per
+IP or similar, with no observed abuse pattern to size it against.
+
+**Alternatives considered:** a small, provisional per-IP limit on new connection attempts,
+rejected on the record this project has already made twice this session: ShipGate gated on
+2 points against a measured noise floor of 20, Spanlight shipped a threshold that fired on
+a pattern written down as healthy. A number invented under no pressure to be right is the
+same mistake with a different label.
+
+**Consequences:** if the refusal path itself is ever observed to be abused, meaning
+something a rate limit would actually stop, that observation is the number to build
+against, and this decision is the one to revisit.
+
 ## 2026-08-17: Prompt caching is a measured null result, not a technique this project uses
 
 **Context:** M1.14 asked to measure Groq's automatic prompt caching, on the assumption
