@@ -19,12 +19,15 @@ from llm.types import (
 
 logger = structlog.get_logger(__name__)
 
-# When the second request goes out. Provisional and labelled as such: it belongs at
-# the primary's measured p90, so that hedging costs extra tokens on roughly a tenth
-# of calls, and nothing has been measured yet. A number chosen by intuition here is
-# the mistake this portfolio has paid for twice, so it is named rather than inlined
-# and it moves when there is data.
-DEFAULT_HEDGE_AFTER_MS = 300
+# When the second request goes out. Belongs at the primary's measured p90, so that
+# hedging costs extra tokens on roughly a tenth of calls rather than most of them.
+# Measured 2026-08-17 against openai/gpt-oss-120b (`bench/prompt_cache.py`'s own
+# twenty real calls, time to first token): p50 499.7ms, p90 833.9ms. The previous
+# value here, 300ms, was chosen before any measurement existed and turned out to
+# be below every single one of those twenty samples, so the hedge as shipped fired
+# on effectively 100% of calls rather than the intended tail, doubling real spend
+# on ordinary traffic. See DECISIONS.
+DEFAULT_HEDGE_AFTER_MS = 834
 
 
 class ChatClient:

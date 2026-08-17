@@ -12,6 +12,34 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: hedge_after_ms was below every measured sample, so the hedge fired on nearly every call
+
+**Context:** M3.5's own note said `hedge_after_ms` "belongs at the primary's measured p90
+and nothing has been measured, so it moves when M0.1 exists." M0.1 is still blocked on
+manual dashboard checks, but `bench/prompt_cache.py`'s own twenty real time-to-first-token
+samples against `openai/gpt-oss-120b`, gathered for a different measurement earlier
+tonight, are a real distribution for the same primary provider. p50 499.7ms, p90 833.9ms.
+The shipped default was 300ms, below every one of the twenty samples: `sorted(...)` put
+the minimum at 411ms. A hedge meant to fire on roughly a tenth of calls was firing on all
+of them, doubling real provider spend on ordinary traffic rather than only covering the
+tail.
+
+**Decision:** `DEFAULT_HEDGE_AFTER_MS = 834`, the measured p90, with the measurement and
+its date in the comment beside it rather than only in this entry.
+
+**Alternatives considered:** waiting for M0.1's own dashboard-derived numbers before
+touching this, rejected because the twenty samples already in hand are a real measurement
+of the same thing against the same provider, not a guess standing in for one, and shipping
+a known-wrong default until an unrelated blocked task clears is worse than updating it now
+and revising again if M0.1's own numbers disagree.
+
+**Consequences:** hedging now costs a second request on roughly the intended tenth of
+calls rather than on all of them. `tests/fault/test_llm_timeout.py` is unrelated to this
+specific number but closes M3.5's other open half: a hung provider, injected for real via
+`fault.faulty_endpoint(Fault.HANG)`, ends the turn in a bounded time rather than the
+session waiting out the hang, verified at both the point before the model has said
+anything and the point where a tool round is already in flight.
+
 ## 2026-08-17: No rate limiting beyond the single-session lock
 
 **Context:** M3.8's own title names "rate limiting and refusal beyond one session." The
