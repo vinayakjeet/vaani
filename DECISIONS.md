@@ -12,6 +12,41 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-17: Prompt caching is a measured null result, not a technique this project uses
+
+**Context:** M1.14 asked to measure Groq's automatic prompt caching, on the assumption
+stated in its own task text that it cuts latency on the cached prefix. `bench/
+prompt_cache.py` sent the real system prompt and real tool schemas, roughly 350 to 390
+tokens, in two arms: `repeated`, the identical prefix every call, and `broken`, a fresh
+UUID appended so no call's prefix can match a previous one. `usage.prompt_tokens_details.
+cached_tokens` read 256 on 6 of 10 `repeated` calls, so caching genuinely activates on
+this prompt's real size, and this project's prefix clears `openai/gpt-oss-120b`'s minimum,
+whatever it is inside Groq's stated 128-to-1024-token range for the family.
+
+**Decision:** report the null result rather than the win the task assumed. Time to first
+token did not separate between the two arms: `repeated` measured slower on the median
+(557.4ms against 473.1ms), and both arms' own spread, roughly 400 to 1540ms, is far wider
+than any gap between them. 256 cached tokens is a small fraction of a request whose latency
+is dominated by Groq's queue time and the network round trip from India to wherever Groq
+answers from, and whatever the cache saves on prefix computation does not surface above
+that. M5's ablation will not carry a caching row, because there is nothing here to
+attribute milliseconds to.
+
+**Alternatives considered:** a larger `--repeats` to shrink the confidence interval and
+possibly find a real separation, rejected for now: the two arms' medians are on the wrong
+side of each other, not close together, so more samples would narrow noise around a null
+finding rather than reveal a hidden effect, and Groq's own per-minute token budget makes
+every added call a real cost against a shared, already-strained quota tonight. Measuring
+the two-hour cache expiry's effect on a cold first visitor, in scope per the task's own
+text, not done: demonstrating it honestly means two real calls two hours apart, which this
+session had no room for; the script is written so a later run can add it without changing
+the method.
+
+**Consequences:** nobody building on this project should reach for prompt caching as a
+latency lever at this prompt size; the technique needs a materially longer cacheable
+prefix to matter here; `Conversation.max_turns`, capped at eight exchanges, is the thing
+that would have to grow before this is worth re-measuring.
+
 ## 2026-08-17: A disconnect mid-reply used to commit the whole reply as heard
 
 **Context:** found writing M3.6's own test. `_play`'s `finally` decides whether to commit
