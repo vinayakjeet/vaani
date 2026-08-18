@@ -12,6 +12,44 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-19: M5.2c's fix shipped unit-tested; its own live re-verification was deferred, not forced through
+
+**Context:** M5.2c's fix (the filler now stops once the real answer's first chunk
+arrives, instead of running to its own exhaustion regardless) was implemented and
+unit-tested the same night M5.2 found the problem. Its own acceptance line asks for
+a live `bench/ablation.py --n 20` re-run to confirm the direction actually changed.
+Three consecutive attempts at that re-run failed, over roughly eight hours of this
+session's cumulative testing: 40 of 40 streamed-arm turns timed out at
+`bench/waterfall.py`'s own 60 second budget, and the unstreamed arm "succeeded" at a
+70,000 to 87,000ms median, more than ten times its usual number. The third attempt
+was paced at 4 seconds between every turn, specifically to rule out a bursty
+per-minute token window the response's own `x-ratelimit-remaining-tokens` header
+showed was real; pacing did not fix it.
+
+**Decision:** stop attempting the live re-run tonight rather than try a fourth time,
+and say so plainly in BACKLOG rather than mark the item done on the strength of the
+unit test alone or quietly drop the acceptance criterion. The evidence points at
+sustained account-level throttling from several hundred real calls already spent
+this session (four full 50-scenario eval runs, four ablation attempts), not a
+rolling window a short pace can outrun, so a fourth attempt spends more real quota
+to relearn a fact three attempts already established.
+
+**Alternatives considered:** raising `bench/waterfall.py`'s 60 second per-turn
+timeout so a slow-but-real answer would eventually be counted, rejected because it
+would not fix what actually happened, it would change what the ablation measures:
+a turn that takes 90 seconds because Groq is throttled is not a number about
+`speak_within`'s filler logic, and folding it into the ablation's own statistics
+would contaminate the very thing M5.2c is trying to re-verify. Marking M5.2c done
+on the unit test alone, rejected because a synthetic test proves the mechanism
+works in isolation, not that it moved the real, measured number this milestone
+exists to report.
+
+**Consequences:** M5.2c stays open. The unit test and the deployed fix are real and
+are not blocked on anything; only the specific number this milestone's acceptance
+asks for is. QUOTAS.md carries the full account of what was tried and what the
+headers showed, so a future session does not have to rediscover this the expensive
+way.
+
 ## 2026-08-18: The ablation's real n=20 number, and why the streamed arm loses
 
 **Context:** M5.2's harness (`bench/ablation.py`) was fixed to survive a single bad
