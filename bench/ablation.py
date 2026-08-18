@@ -62,6 +62,7 @@ class ArmRun:
     utterance_id: str
     first_answer_heard_ms: float | None
     reply_chars: int
+    error: str | None = None
 
 
 async def run_unstreamed(entry: dict) -> ArmRun:
@@ -148,10 +149,31 @@ async def measure(n: int, arms: list[str]) -> list[ArmRun]:
     done = 0
     for entry in corpus:
         for arm in arms:
-            if arm == "unstreamed":
-                results.append(await run_unstreamed(entry))
-            else:
-                results.append(await run_streamed_arm(arm, entry, exporter))
+            # A single transient failure (a live Groq rate limit, a DNS blip on
+            # this machine) must not cost the whole run. n=20 across three arms
+            # is 60 real network calls; losing all of them to one bad call is a
+            # worse failure than the one it was reacting to. The turn is recorded
+            # with its error and excluded from the summary statistics rather than
+            # silently dropped, so a run's raw JSON always shows what happened.
+            try:
+                if arm == "unstreamed":
+                    results.append(await run_unstreamed(entry))
+                else:
+                    results.append(await run_streamed_arm(arm, entry, exporter))
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"  {arm} / {entry['id']} FAILED: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                results.append(
+                    ArmRun(
+                        arm=arm,
+                        utterance_id=entry["id"],
+                        first_answer_heard_ms=None,
+                        reply_chars=0,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                )
             done += 1
             print(f"  {done}/{total}: {arm} / {entry['id']}", file=sys.stderr)
     return results
@@ -159,13 +181,20 @@ async def measure(n: int, arms: list[str]) -> list[ArmRun]:
 
 def summarise(results: list[ArmRun], baseline_arm: str) -> dict:
     by_arm: dict[str, list[float]] = {}
+    failures: dict[str, int] = {}
     for r in results:
         if r.first_answer_heard_ms is not None:
             by_arm.setdefault(r.arm, []).append(r.first_answer_heard_ms)
+        else:
+            failures[r.arm] = failures.get(r.arm, 0) + 1
 
     baseline_median = statistics.median(by_arm[baseline_arm]) if by_arm.get(baseline_arm) else None
 
-    summary = {"n_per_arm": {arm: len(vals) for arm, vals in by_arm.items()}, "arms": {}}
+    summary = {
+        "n_per_arm": {arm: len(vals) for arm, vals in by_arm.items()},
+        "failures_per_arm": failures,
+        "arms": {},
+    }
     for arm, values in by_arm.items():
         median = statistics.median(values)
         summary["arms"][arm] = {
