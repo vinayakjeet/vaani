@@ -12,6 +12,66 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-18: check_eligibility was never actually being called, and the eval that was supposed to catch it is what caught it
+
+**Context:** M4.7's eval runner (`eval/run_eval.py`), wrapping `vaani.llm_turn.dispatch`
+to record real tool calls against `eval/scenarios.json`, was run live for the first time
+as a smoke test. Result: 0 of 12 `eligibility_positive` scenarios passed, and all 3
+`boundary` scenarios failed the same way. `find_schemes` was called correctly every time;
+`check_eligibility` either was never called at all, or Groq rejected it outright with
+`tool_use_failed`, quoting a `failed_generation` with invented field names for `applicant`
+(`land_acres`, `land_area_acres`, `annual_income`, `age`, `income`, `occupation`,
+`family_members` - never the four real ones). This was live against the currently deployed
+model, meaning the deployed service was silently failing essentially every eligibility
+question and falling back to `COULD_NOT_CHECK`, not a scenario-corpus artifact.
+
+Isolated with a direct probe against the real Groq endpoint, two schemas, five tries each,
+same question, same conversation state (`find_schemes` already answered, feeding a real
+tool result back): the exact schema `tool_schemas()` was already sending, which declares
+`applicant` as `{"$ref": "#/$defs/Applicant"}`, failed 5 of 5 tries with invented field
+names. The same schema with `Applicant`'s definition inlined in place of the `$ref`
+succeeded 5 of 5 tries, with the exact declared field names and correct values pulled from
+the conversation (`land_holding_acres: 3`, `state: "Bihar"`, `annual_income_inr: 0` as the
+correct default when income was never mentioned). `find_schemes` has no nested object and
+no `$ref` in its own schema, which is why it was never affected.
+
+This is the same failure class the `Rupees`/`Acres` type aliases in `vaani/tools.py`
+were already built to avoid, one layer up: "a reference it may not resolve is a worse
+contract than a repeated four-line object." That fix covered field-level aliases; it never
+reached `Applicant`, the one nested `BaseModel`, because pydantic's own `model_json_schema()`
+always renders a nested `BaseModel` as `$ref`/`$defs` and nothing in the code touched that
+shape afterward.
+
+**Decision:** added `_inline_defs()` in `vaani/tools.py`, run over every tool's schema
+before it is advertised: walks the schema, replaces every `$ref` into `$defs` with the
+definition it points to, and drops `$defs` from the output. `tool_schemas()` now never
+emits a `$ref`, for `Applicant` or for any future nested tool argument. A regression test
+(`test_no_schema_ever_advertises_a_ref`) walks every advertised schema and asserts neither
+key ever appears again. Re-ran the `eligibility_positive` eval category after the fix:
+9 of 12 passed, up from 0 of 12; the one remaining failure is the model choosing not to
+call `check_eligibility` on a fully-answerable Devanagari-script question, a different and
+much smaller failure mode (an omission, not a malformed call) that this entry does not
+claim to have fixed.
+
+**Alternatives considered:** flattening `Applicant`'s fields directly onto
+`EligibilityRequest` (dropping the nested model entirely), rejected because it would also
+change the internal call shape `check_eligibility()` and its tests build against, for a
+problem that is specifically about what the model is shown, not what the code is shaped
+like internally. A model-level fix (switching providers, or accepting the loss and coaching
+the model harder in the system prompt) was not tried first, on the same reasoning as the
+`gpt-oss-120b` swap earlier this project: fix the contract before assuming the model cannot
+be told correctly, since here it plainly could be.
+
+**Consequences:** every real eligibility answer the deployed service has given since the
+model swap to `openai/gpt-oss-120b` (see the entry below on Groq removing
+`llama-3.3-70b-versatile`) was very likely a `COULD_NOT_CHECK` filler line dressed as an
+answer, not a real check, for as long as that model has been live and this schema shape
+unchanged. Deployed immediately after verification rather than batched with other work,
+since this is a live correctness bug, not a benchmark finding. The n=20 ablation run
+started before this fix was discovered was discarded rather than published: an unknown
+share of its `check_eligibility`-bearing turns paid for a failed second round before
+falling back, on both arms, in a way this entry has no basis to claim was symmetric.
+
 ## 2026-08-18: Sarvam Saaras is not a request-response protocol, and the first build assumed it was
 
 **Context:** M4.4's second stack needed a streaming STT client for Sarvam Saaras. The

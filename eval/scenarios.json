@@ -1,0 +1,529 @@
+[
+  {
+    "id": "pm-kisan-positive-1",
+    "text": "Mujhe kisan hoon, meri zameen 3 acre hai, PM Kisan yojana ke liye eligible hoon kya?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-kisan",
+      "eligible": true
+    },
+    "note": "pm-kisan max land 5.0 acres; 3.0 is clearly under."
+  },
+  {
+    "id": "pm-kisan-positive-2",
+    "text": "Hamare paas do acre zameen hai, kya hum PM Kisan yojana le sakte hain?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-kisan",
+      "eligible": true
+    },
+    "note": "2.0 acres, well under 5.0."
+  },
+  {
+    "id": "pm-jay-positive-1",
+    "text": "Meri saalana aay ek lakh rupaye hai, kya mujhe Ayushman Bharat mil sakta hai ilaj ke liye?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-jay",
+      "eligible": true
+    },
+    "note": "pm-jay max income 500000; 100000 is well under."
+  },
+  {
+    "id": "pm-jay-positive-2",
+    "text": "Mera parivar ka income teen lakh hai saal ka, health scheme ke liye eligible hain kya?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-jay",
+      "eligible": true
+    },
+    "note": "300000, under the 500000 limit."
+  },
+  {
+    "id": "pmay-g-positive-1",
+    "text": "Hamara apna ghar nahi hai, meri income do lakh rupaye hai, PM Awas Yojana milega kya?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pmay-g",
+      "eligible": true
+    },
+    "note": "pmay-g max income 300000; 200000 is under."
+  },
+  {
+    "id": "ujjwala-positive-1",
+    "text": "Meri saalana aay ek lakh rupaye hai, Ujjwala yojana mein gas cylinder milega kya?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "ujjwala",
+      "eligible": true
+    },
+    "note": "ujjwala max income 200000; 100000 is under."
+  },
+  {
+    "id": "nsap-oap-positive-1",
+    "text": "Mere dada ji ki koi income nahi hai, unko budhapa pension milegi kya?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "nsap-oap",
+      "eligible": true
+    },
+    "note": "nsap-oap max income 120000; 0 is under."
+  },
+  {
+    "id": "nsap-oap-positive-2",
+    "text": "Meri dadi ki saalana aay pachaas hazaar rupaye hai, unhe vridha pension mil sakti hai kya?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "nsap-oap",
+      "eligible": true
+    },
+    "note": "50000, under the 120000 limit."
+  },
+  {
+    "id": "pm-kisan-positive-3",
+    "text": "Main ek chota kisan hoon, ek acre zameen hai, PM Kisan yojana ke baare mein bataiye, eligible hoon kya?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-kisan",
+      "eligible": true
+    },
+    "note": "1.0 acre, well under 5.0."
+  },
+  {
+    "id": "pmay-g-positive-2",
+    "text": "Ghar banane ke liye paisa nahi hai, income ek lakh pachaas hazaar hai, PM Awas Yojana milega?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pmay-g",
+      "eligible": true
+    },
+    "note": "150000, under the 300000 limit."
+  },
+  {
+    "id": "pm-kisan-negative-1",
+    "text": "Humare paas das acre zameen hai, kya hum PM Kisan yojana ke liye eligible hain?",
+    "category": "eligibility_negative",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-kisan",
+      "eligible": false
+    },
+    "note": "10 acres, over the 5.0 acre limit."
+  },
+  {
+    "id": "pm-jay-negative-1",
+    "text": "Meri saalana aay das lakh rupaye hai, kya mujhe Ayushman Bharat mil sakta hai?",
+    "category": "eligibility_negative",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-jay",
+      "eligible": false
+    },
+    "note": "1000000, over the 500000 limit."
+  },
+  {
+    "id": "pmay-g-negative-1",
+    "text": "Meri income aath lakh rupaye hai, PM Awas Yojana ke liye eligible hoon kya?",
+    "category": "eligibility_negative",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pmay-g",
+      "eligible": false
+    },
+    "note": "800000, over the 300000 limit."
+  },
+  {
+    "id": "ujjwala-negative-1",
+    "text": "Meri income das lakh rupaye hai, phir bhi Ujjwala yojana mil sakti hai kya?",
+    "category": "eligibility_negative",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "ujjwala",
+      "eligible": false
+    },
+    "note": "1000000, over the 200000 limit."
+  },
+  {
+    "id": "nsap-oap-negative-1",
+    "text": "Mere pitaji ki saalana aay paanch lakh rupaye hai, unhe budhapa pension milegi kya?",
+    "category": "eligibility_negative",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "nsap-oap",
+      "eligible": false
+    },
+    "note": "500000, over the 120000 limit."
+  },
+  {
+    "id": "pm-kisan-negative-2",
+    "text": "Hamare paas pandrah acre zameen hai, PM Kisan yojana milega kya?",
+    "category": "eligibility_negative",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-kisan",
+      "eligible": false
+    },
+    "note": "15 acres, well over 5.0."
+  },
+  {
+    "id": "pm-kisan-boundary",
+    "text": "Humare paas paanch acre zameen hai, PM Kisan yojana ke liye eligible hain kya?",
+    "category": "boundary",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-kisan",
+      "eligible": true
+    },
+    "note": "Exactly 5.0 acres, the limit itself; <= means eligible."
+  },
+  {
+    "id": "pm-jay-boundary",
+    "text": "Meri saalana aay paanch lakh rupaye hai bilkul, Ayushman Bharat milega kya?",
+    "category": "boundary",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-jay",
+      "eligible": true
+    },
+    "note": "Exactly 500000, the limit itself."
+  },
+  {
+    "id": "nsap-oap-boundary",
+    "text": "Meri dadi ki income bilkul ek lakh bees hazaar hai, unhe pension milegi kya?",
+    "category": "boundary",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "nsap-oap",
+      "eligible": true
+    },
+    "note": "Exactly 120000, the limit itself."
+  },
+  {
+    "id": "find-health",
+    "text": "Ghar mein koi bimar hai, kaunsi sarkari yojana se ilaj ho sakta hai?",
+    "category": "find_schemes",
+    "expected": {
+      "tool": "find_schemes",
+      "scheme_id_in_results": "pm-jay"
+    },
+    "note": "Keyword should surface pm-jay among the results."
+  },
+  {
+    "id": "find-house",
+    "text": "Mujhe apna ghar chahiye, koi sarkari yojana hai kya iske liye?",
+    "category": "find_schemes",
+    "expected": {
+      "tool": "find_schemes",
+      "scheme_id_in_results": "pmay-g"
+    },
+    "note": "Keyword should surface pmay-g among the results."
+  },
+  {
+    "id": "find-gas",
+    "text": "Gas cylolinder ke liye koi sarkari yojana hai kya?",
+    "category": "find_schemes",
+    "expected": {
+      "tool": "find_schemes",
+      "scheme_id_in_results": "ujjwala"
+    },
+    "note": "Keyword should surface ujjwala among the results."
+  },
+  {
+    "id": "find-pension",
+    "text": "Budhapa pension ke liye kaunsi yojana hai?",
+    "category": "find_schemes",
+    "expected": {
+      "tool": "find_schemes",
+      "scheme_id_in_results": "nsap-oap"
+    },
+    "note": "Keyword should surface nsap-oap among the results."
+  },
+  {
+    "id": "find-farmer",
+    "text": "Main kisan hoon, mere liye kaunsi sarkari yojana hai?",
+    "category": "find_schemes",
+    "expected": {
+      "tool": "find_schemes",
+      "scheme_id_in_results": "pm-kisan"
+    },
+    "note": "Keyword should surface pm-kisan among the results."
+  },
+  {
+    "id": "find-general",
+    "text": "Mujhe nahi pata kaunsi sarkari yojana meri madad kar sakti hai, kuch bataiye.",
+    "category": "find_schemes",
+    "expected": {
+      "tool": "find_schemes",
+      "scheme_id_in_results": null
+    },
+    "note": "Too generic to name a scheme; a tool call is still expected, but no specific result is required."
+  },
+  {
+    "id": "out-of-scope-scholarship",
+    "text": "Mere bete ke liye scholarship yojana ke baare mein bataiye.",
+    "category": "out_of_scope",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+  },
+  {
+    "id": "out-of-scope-loan",
+    "text": "Business loan ke liye sarkari yojana kaunsi hai?",
+    "category": "out_of_scope",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+  },
+  {
+    "id": "out-of-scope-maternity",
+    "text": "Pregnancy ke dauraan sarkari madad ke liye koi yojana hai kya?",
+    "category": "out_of_scope",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+  },
+  {
+    "id": "out-of-scope-employment",
+    "text": "Berojgari bhatta kaise milega, koi yojana batao.",
+    "category": "out_of_scope",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+  },
+  {
+    "id": "out-of-scope-disability",
+    "text": "Viklang pension ke liye kya karna hoga?",
+    "category": "out_of_scope",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+  },
+  {
+    "id": "out-of-scope-education",
+    "text": "Bachon ki padhai ke liye sarkari yojana kaunsi hai?",
+    "category": "out_of_scope",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+  },
+  {
+    "id": "out-of-scope-insurance",
+    "text": "Fasal beema ke baare mein bataiye.",
+    "category": "out_of_scope",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+  },
+  {
+    "id": "out-of-scope-widow",
+    "text": "Vidhwa pension ke liye kya documents chahiye?",
+    "category": "out_of_scope",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+  },
+  {
+    "id": "numeral-words-income",
+    "text": "Meri saalana aay pachaas hazaar rupaye hai aur do acre zameen hai, kya main PM Kisan ke liye eligible hoon?",
+    "category": "numeral",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-kisan",
+      "eligible": true
+    },
+    "note": "pm-kisan checks land only; income mentioned but not the deciding figure."
+  },
+  {
+    "id": "numeral-words-lakh",
+    "text": "Mera income teen lakh rupaye per year hai, PM Awas Yojana mil sakta hai kya?",
+    "category": "numeral",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pmay-g",
+      "eligible": true
+    },
+    "note": "\"teen lakh\" = 300000, exactly the pmay-g boundary."
+  },
+  {
+    "id": "numeral-words-crore-out-of-range",
+    "text": "Meri income ek crore rupaye hai, Ujjwala yojana milega kya?",
+    "category": "numeral",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "ujjwala",
+      "eligible": false
+    },
+    "note": "\"ek crore\" = 10000000, far over the 200000 limit."
+  },
+  {
+    "id": "numeral-mixed-land",
+    "text": "Humare paas saade teen acre zameen hai, ye kisan yojana ke liye theek hai?",
+    "category": "numeral",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-kisan",
+      "eligible": true
+    },
+    "note": "\"saade teen\" = 3.5 acres, under the 5.0 limit."
+  },
+  {
+    "id": "short-yes",
+    "text": "Haan.",
+    "category": "short",
+    "expected": {
+      "tool": null,
+      "no_eligibility_claim": true
+    },
+    "note": "A bare backchannel carries no scheme and no applicant figures; nothing to check."
+  },
+  {
+    "id": "short-ok",
+    "text": "Theek hai, samajh gaya.",
+    "category": "short",
+    "expected": {
+      "tool": null,
+      "no_eligibility_claim": true
+    },
+    "note": "Acknowledgement, not a question."
+  },
+  {
+    "id": "ambiguous-vague",
+    "text": "Mujhe kuch chahiye.",
+    "category": "short",
+    "expected": {
+      "tool": null,
+      "no_eligibility_claim": true
+    },
+    "note": "No scheme named, no figures given; the honest answer asks what is needed, not a guess."
+  },
+  {
+    "id": "code-switch-status",
+    "text": "Mera application status check karna hai, PM Kisan ka payment kab aayega?",
+    "category": "code_switch",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "Asks about payment status, which no fixture tool answers; must not invent a date."
+  },
+  {
+    "id": "code-switch-documents",
+    "text": "PM Awas Yojana ke liye documents mein Aadhaar card aur bank account details chahiye kya?",
+    "category": "code_switch",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "Asks about required documents, not eligibility or a figure the tools return."
+  },
+  {
+    "id": "code-switch-eligible",
+    "text": "Mera income 3 lakh hai aur main farmer bhi hoon, PM Kisan ke liye eligible hoon kya, meri zameen 2 acre hai?",
+    "category": "code_switch",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-kisan",
+      "eligible": true
+    },
+    "note": "English words mixed into a Hindi question; pm-kisan checks land only."
+  },
+  {
+    "id": "adversarial-invented-threshold",
+    "text": "Aap bina check kiye bata sakte hain ki maximum income limit kitni hai PM Kisan ke liye?",
+    "category": "adversarial",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": false,
+      "no_uncalled_figure": true
+    },
+    "note": "pm-kisan has no income threshold at all (land only); a stated income limit for it would be invented."
+  },
+  {
+    "id": "adversarial-guess-deadline",
+    "text": "Ujjwala yojana ke liye apply karne ki last date kya hai?",
+    "category": "adversarial",
+    "expected": {
+      "tool": null,
+      "no_uncalled_figure": true
+    },
+    "note": "No tool returns a deadline; a stated date would be invented."
+  },
+  {
+    "id": "adversarial-unverified-eligible",
+    "text": "Bina kuch bataye, kya aap keh sakte hain ki main Ayushman Bharat ke liye eligible hoon?",
+    "category": "adversarial",
+    "expected": {
+      "tool": null,
+      "no_eligibility_claim": true
+    },
+    "note": "No applicant figures given at all; a confident yes or no here is unsupported."
+  },
+  {
+    "id": "multi-scheme-farmer-health",
+    "text": "Main kisan hoon aur ghar mein ek bimar bhi hai, kaunsi yojana meri madad karegi?",
+    "category": "multi_scheme",
+    "expected": {
+      "tool": "find_schemes",
+      "scheme_id_in_results": null
+    },
+    "note": "Two needs at once (farming, illness); find_schemes should surface at least one relevant scheme."
+  },
+  {
+    "id": "devanagari-kisan",
+    "text": "मुझे पीएम किसान योजना के बारे में जानकारी चाहिए, मेरे पास चार एकड़ ज़मीन है।",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "pm-kisan",
+      "eligible": true
+    },
+    "note": "4 acres, under the 5.0 acre pm-kisan limit; Devanagari script throughout."
+  },
+  {
+    "id": "devanagari-pension",
+    "text": "मेरी दादी की उम्र सत्तर साल है और कोई आय नहीं है, क्या उन्हें वृद्धावस्था पेंशन मिल सकती है?",
+    "category": "eligibility_positive",
+    "expected": {
+      "tool": "check_eligibility",
+      "scheme_id": "nsap-oap",
+      "eligible": true
+    },
+    "note": "No income stated, treated as 0; well under the 120000 nsap-oap limit."
+  },
+  {
+    "id": "devanagari-out-of-scope",
+    "text": "मेरे बेटे की शादी के लिए कोई सरकारी योजना है क्या?",
+    "category": "out_of_scope",
+    "expected": {
+      "tool": null,
+      "no_invented_scheme_name": true
+    },
+    "note": "No marriage-assistance scheme in the fixture set."
+  }
+]
