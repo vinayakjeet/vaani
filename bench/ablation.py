@@ -142,7 +142,7 @@ async def run_streamed_arm(arm: str, entry: dict, exporter: InMemorySpanExporter
     )
 
 
-async def measure(n: int, arms: list[str]) -> list[ArmRun]:
+async def measure(n: int, arms: list[str], pace_s: float = 0.0) -> list[ArmRun]:
     corpus = load_corpus()[:n]
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -184,6 +184,23 @@ async def measure(n: int, arms: list[str]) -> list[ArmRun]:
                 )
             done += 1
             print(f"  {done}/{total}: {arm} / {entry['id']}", file=sys.stderr)
+            if pace_s:
+                # Groq's per-minute token budget, not its per-day request count, is
+                # what this run actually contends for: verified live 2026-08-19 via
+                # the response's own x-ratelimit-remaining-tokens header, reset in
+                # the hundreds of milliseconds, a rolling window rather than a fixed
+                # bucket. The streamed arms cost roughly twice unstreamed's tokens
+                # per turn (a tool-calling round trip each, where unstreamed makes
+                # one bare completion call), and a slow response makes
+                # DEFAULT_HEDGE_AFTER_MS fire a second request that doubles it
+                # again, so 60 turns fired back to back can burst well past the
+                # ceiling and throttle themselves into it: two consecutive n=20
+                # attempts that night failed 40 of 40 streamed-arm turns to a
+                # 60 second timeout while the unstreamed arm "succeeded" at a
+                # 70,000ms+ median, both explained by this, neither a code defect.
+                # A short pace between turns costs real wall-clock time but gives
+                # the rolling window room to refill before the next request.
+                await asyncio.sleep(pace_s)
     return results
 
 
@@ -264,10 +281,20 @@ async def main() -> int:
         choices=["unstreamed", "streamed", "semantic_off", "aggressiveness_0", "aggressiveness_3"],
     )
     parser.add_argument("--json", type=Path, default=Path(__file__).with_suffix(".json"))
+    parser.add_argument(
+        "--pace-s",
+        type=float,
+        default=0.0,
+        help=(
+            "sleep this long between turns, to stay under Groq's per-minute token "
+            "budget on a long run; see this script's own comment in measure() for "
+            "why 0 (the default, for short runs) is not always safe at n=20"
+        ),
+    )
     args = parser.parse_args()
 
     baseline_arm = "unstreamed" if "unstreamed" in args.arms else args.arms[0]
-    results = await measure(args.n, args.arms)
+    results = await measure(args.n, args.arms, pace_s=args.pace_s)
     summary = summarise(results, baseline_arm)
 
     args.json.write_text(
