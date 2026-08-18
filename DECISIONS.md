@@ -1725,4 +1725,44 @@ each one's actual evidence, so M6.4's own acceptance, "A1 through A10... in this
 file," is satisfiable by a reader following those pointers rather than by
 duplicating their content here.
 
+## 2026-08-18: The unstreamed baseline's first clock skipped the wait it was supposed to pay
+
+**Context:** M5.2's ablation harness measures the streamed pipeline against the M0
+unstreamed baseline (`vaani/turn.py`). The first version of the unstreamed arm
+called `Turn.run(pcm)` on the corpus utterance's whole buffer immediately and timed
+that call alone. The result: the "slow, naive baseline" arm measured faster than
+the streamed arm it exists to be measured against, which is backwards. Investigated
+rather than reported, because a baseline built to be the floor coming in under the
+optimised path is a bug in the measurement, not a finding about the pipeline.
+
+The cause is exactly the shape CLAUDE.md's own history warns about: a span measures
+its own extent, so where you start it is the measurement. `bench/stages.md` defines
+time to first audio from the last frame of user speech, which for the streamed arm
+includes the real, paced, real-time wait for the endpoint's trailing silence to
+elapse, several hundred milliseconds to a full second depending on aggressiveness.
+The unstreamed arm's first version had no frame pacing and no endpointer at all, so
+its clock started at "whenever this function was called" with that wait already
+absent, structurally, not measured away.
+
+**Decision:** the unstreamed arm now paces frames through a real `Endpointer` the
+same way the streamed arm's own corpus playback does, and backdates its clock to
+the endpoint-fire time minus the trailing silence, `endpointer.silence_ms`, the
+same computation `vaani/session.py` already uses for the streamed arms' own clock.
+Both arms now start counting from the same event.
+
+**Alternatives considered:** subtracting a flat, assumed trailing-silence constant
+from the unstreamed arm's own wall-clock time after the fact, rejected because the
+actual wait depends on the endpointer's own state (semantic completeness can end it
+early), and a flat correction would be exactly the kind of assumed-not-measured
+number this project's own DECISIONS entries keep finding and fixing elsewhere
+tonight.
+
+**Consequences:** after the fix, a small (n=2) run found the streamed arm faster by
+376ms, the predicted direction; a separate small (n=3) run across all three arms
+found it slower by 2316ms. Both are real, both used the corrected clock, and they
+disagree with each other, which is itself the finding: at n this small, ordinary
+per-call latency variance dominates whatever the true technique effect is, and
+`ablation/hypothesis.md`'s own n=20 is not a formality. M5.2 stays open rather than
+publishing either small run as the number.
+
 <!-- Add entries above this line. -->
