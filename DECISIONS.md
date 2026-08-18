@@ -12,6 +12,76 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-18: The ablation's real n=20 number, and why the streamed arm loses
+
+**Context:** M5.2's harness (`bench/ablation.py`) was fixed to survive a single bad
+turn and re-run twice more at the pre-registered n=20, once discarded because it
+ran before the `$ref` schema fix above and its `check_eligibility`-bearing turns
+paid an unknown, likely asymmetric, cost for a failed tool round. The clean run,
+on the corrected schema:
+
+```
+arm                    n   median_ms    p95_ms    min_ms    max_ms  bought_vs_unstreamed
+unstreamed            20      5666.7    8253.1    3402.5    9632.1
+streamed              20     11114.3   14751.4    5716.0   14992.2             -5447.6ms
+semantic_off          20     10793.4   14158.6    4984.5   16490.4             -5126.6ms
+```
+
+Every one of 20 utterances was slower on the streamed arm than the same utterance on
+the unstreamed baseline, no exceptions, which rules out this being sampling noise:
+this is the third real n measured this session (n=2, n=3, now n=20) and the first
+two disagreed with each other in direction, which was the honest small-n reading at
+the time; n=20 does not disagree with itself.
+
+This contradicts `ablation/hypothesis.md`'s pre-registered prediction, and the
+instinct at this point in the project is to suspect the clock again, the same way
+the unstreamed baseline's own clock was found broken earlier this session. It is
+not broken this time. Both arms measure `first_answer_heard_ms`/its unstreamed
+equivalent from the same backdated last-frame-of-speech event, per `bench/stages.md`.
+The direction is real, and the mechanism is traceable in the code, not inferred from
+the two numbers alone: `TurnClock.mark_heard` in `vaani/budget.py` is called with
+`self._turns.playing_ms_remaining()`, so the streamed arm's answer is recorded as
+heard only once whatever audio is already queued ahead of it, which is the M3.5
+filler acknowledgement on nearly every turn (README's own waterfall run measured a
+filler rate of 1.0), has finished playing. The unstreamed baseline has no filler
+mechanism at all: nothing plays until the whole reply is synthesised, so its first
+byte is heard the instant playback can start, with nothing queued ahead of it.
+
+The filler was built to cover dead air, not to add it, and on this measurement it is
+doing the opposite: it plays in full regardless of how much of the real answer is
+already ready by the time it finishes, so it never shortens the wait and, whenever
+the answer becomes ready mid-filler, strictly lengthens it by however much filler
+is still unplayed. A system that says nothing and then plays the whole answer at
+once, which is what the unstreamed baseline is, does not pay that tax.
+
+**Decision:** publish the number as measured, including the direction nobody
+predicted. `ablation/hypothesis.md` predicted streamed would win on latency; it
+lost, honestly measured, and the reason is traceable to one specific mechanism
+(M3.5's filler, not streaming itself) rather than left as an unexplained anomaly.
+`bench/ablation.py` now also reports p95 and each streamed run's own `filler_spoken`
+flag, so a reader can check this account against the raw data rather than take the
+explanation on trust; the specific n=20 run quoted above predates that field being
+added; and the mechanism itself was confirmed by reading `mark_heard`'s call site,
+not only inferred from the correlation between this run and the older, separately
+published `first_audio_ms` (1465ms) versus `first_answer_heard_ms` (14332ms) gap in
+`bench/waterfall.py`'s own real 20-utterance run.
+
+**Alternatives considered:** re-running again on the theory that this is still
+noise, rejected because the effect is total (20 of 20) and now mechanically
+explained, not merely correlated; more runs would cost real spend to confirm
+something the code already demonstrates. Silently reworking the filler to interrupt
+or overlap with the real answer before publishing a number, rejected as the exact
+mistake this portfolio's own LEARNING record warns against: reclassifying after
+seeing an unflattering result is the move Spanlight's fourth detector got wrong.
+
+**Consequences:** this is now the headline finding of M5's depth chapter, and it is
+a genuine one: the technique this project's own hypothesis expected to win, loses,
+and the reason is a specific, fixable design choice in a different milestone
+(M3.5), not streaming in general. Reopening M3.5 to make the filler interruptible
+by the real answer, and re-measuring, is the natural next step and is noted in
+BACKLOG rather than done here, since fixing it now would be measuring a different
+system than the one this entry just characterised.
+
 ## 2026-08-18: The industry-median figure is Openbenchmarks, sourced and dated
 
 **Context:** SPEC A7 flagged the 1.4 to 1.7 second industry-median figure used to motivate

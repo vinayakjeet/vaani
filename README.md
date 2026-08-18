@@ -117,21 +117,40 @@ caching eligible against 473.1ms without), both swamped by ordinary queue
 and network variance far larger than 256 cached tokens could plausibly save.
 Not a technique this project uses or reports as a win.
 
-**Depth-chapter ablation**, `bench/ablation.py`: harness built, three real
-independently-switchable arms identified (of the seven originally planned;
-the other four were never built or share one implementation, see
-`ablation/hypothesis.md`). A real measurement bug was found and fixed before
-trusting any number from it (the unstreamed baseline's clock skipped the
-endpoint wait it was supposed to pay), and two small, honest runs after the
-fix disagree with each other in direction, which is itself the finding:
-below the pre-registered n=20, ordinary per-call latency variance dominates
-whatever the true technique effect is. **Not yet a published number** for
-that reason; see DECISIONS.md and BACKLOG's M5.2 for the full account.
+**Depth-chapter ablation**, twenty utterances per arm, interleaved,
+`bench/ablation.py`: three real independently-switchable arms (of the seven
+originally planned; the other four were never built or share one
+implementation, see `ablation/hypothesis.md`).
+
+```
+arm            n  median_ms  p95_ms  min_ms   max_ms  bought_vs_unstreamed
+unstreamed    20     5666.7  8253.1  3402.5   9632.1
+streamed      20    11114.3 14751.4  5716.0  14992.2            -5447.6ms
+semantic_off  20    10793.4 14158.6  4984.5  16490.4            -5126.6ms
+```
+
+**Streaming loses to the naive baseline**, every one of 20 utterances, and
+this contradicts what `ablation/hypothesis.md` predicted before any of this
+was measured. It is not noise or a clock bug: two real measurement bugs were
+found and fixed on the way here (see What Broke), and this result held
+across the clean re-runs after both fixes. The mechanism is traceable in the
+code: `TurnClock.mark_heard` records the answer as heard only once whatever
+audio is already queued ahead of it has played, which on nearly every real
+turn is the M3.5 filler acknowledgement (filler rate 1.0 in the waterfall
+run above). The unstreamed baseline has no filler at all, so it pays no such
+tax; the filler plays in full regardless of how much of the real answer is
+already ready by the time it finishes, so it never shortens the wait it
+exists to cover and sometimes lengthens it. That is a genuine finding about
+M3.5's filler design, not about streaming, and the natural fix (make the
+filler interruptible by the real answer, then re-measure) is BACKLOG's
+M5.2c, deliberately not done in the same pass that found the problem. Full
+account, including how the two prior measurement bugs were caught, in
+DECISIONS.md.
 
 ## Technical decisions
 
 Full log with context, alternatives, and consequences: [`DECISIONS.md`](DECISIONS.md),
-38 entries. Highlights:
+41 entries. Highlights:
 
 - **WebSocket, not WebRTC**, for the transport: this project's audio never
   crosses a lossy public network path the way a real call does, and WebRTC's
@@ -184,6 +203,23 @@ marketing, not an engineering record.
 - **An ablation baseline's own clock skipped the wait it was supposed to
   pay**, making the slow, naive baseline measure faster than the optimised
   path. Caught before publishing anything from it.
+- **`check_eligibility` was almost never actually being called, on the live
+  deployed service.** The tool schema declared its nested `applicant` object
+  as a `$ref` into `$defs`, which is exactly correct JSON Schema and exactly
+  what pydantic emits for a nested model. Groq's `openai/gpt-oss-120b`
+  cannot reliably resolve it: shown the schema with the `$ref` in place, it
+  invented its own field names for `applicant` 5 of 5 tries against the live
+  endpoint; shown the identical schema with the reference inlined, it got
+  every field right 5 of 5 tries. Every real eligibility question the
+  deployed service answered since the model swap below was very likely a
+  "could not check" filler line, not a real check. Fixed by inlining every
+  `$ref` before a schema is advertised, deployed, and verified live.
+- **A latency ablation's own naive baseline turned out to be the fair one.**
+  The optimised, streamed arm measured slower than the unstreamed baseline
+  at a clean n=20, and the reason was not the clock this time: the filler
+  acknowledgement plays in full before the real answer regardless of how
+  much of the answer is already ready, a real design gap the ablation
+  surfaced rather than a measurement mistake. See Benchmarks above.
 
 ## Runbook
 
