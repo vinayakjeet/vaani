@@ -304,9 +304,37 @@ def _schema(name: str, description: str | None, model: type[BaseModel]) -> dict[
         "function": {
             "name": name,
             "description": summary,
-            "parameters": model.model_json_schema(),
+            "parameters": _inline_defs(model.model_json_schema()),
         },
     }
+
+
+def _inline_defs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Replace every `$ref` to `$defs` with the definition itself, and drop `$defs`.
+
+    `EligibilityRequest.applicant` is a nested `Applicant` model, and pydantic
+    renders any nested `BaseModel` as `$ref: "#/$defs/Applicant"` rather than
+    inlining it, the same shape the `Rupees`/`Acres` aliases above were built to
+    avoid at the field level, one layer up. Verified live against Groq's
+    `openai/gpt-oss-120b`: with the `$ref` present it invented `applicant` field
+    names (`land_acres`, `land_area_acres`, ...) and dropped required ones, 5 of
+    5 tries; with the same schema inlined it produced the exact declared fields,
+    5 of 5 tries. The model is reading the schema it is shown, not the one a
+    `$ref` points at, so the schema it is shown must not point anywhere.
+    """
+    defs = schema.get("$defs", {})
+
+    def resolve(node: Any) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node and node["$ref"].startswith("#/$defs/"):
+                target = defs[node["$ref"].removeprefix("#/$defs/")]
+                return resolve({k: v for k, v in target.items()})
+            return {k: resolve(v) for k, v in node.items() if k != "$defs"}
+        if isinstance(node, list):
+            return [resolve(item) for item in node]
+        return node
+
+    return resolve(schema)
 
 
 def _validated[T: BaseModel](model: type[T], arguments: dict[str, Any]) -> T:

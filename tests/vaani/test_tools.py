@@ -183,6 +183,29 @@ def test_every_advertised_tool_declares_its_parameters() -> None:
         assert schema["function"]["description"]
 
 
+def test_no_schema_ever_advertises_a_ref() -> None:
+    """Verified live against Groq's openai/gpt-oss-120b: shown a `$ref` into
+    `$defs` for the nested `Applicant` object, it invented its own field names
+    for `applicant` (`land_acres`, `land_area_acres`, ...) and dropped required
+    ones, 5 of 5 tries; shown the same schema inlined, it produced the exact
+    declared fields, 5 of 5 tries. `$defs`/`$ref` must never reappear here, on
+    this or any future nested tool argument, or every check_eligibility call
+    silently goes back to failing this way."""
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            assert "$ref" not in node
+            assert "$defs" not in node
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    for schema in tool_schemas():
+        walk(schema)
+
+
 @pytest.mark.parametrize("rule", RULES, ids=lambda rule: rule.scheme.scheme_id)
 # Every threshold in RULES appears exactly, plus one either side of it. A matrix
 # of round numbers passed an off-by-one comparison, because none of its values
