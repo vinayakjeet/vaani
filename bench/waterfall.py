@@ -112,17 +112,32 @@ class QueueTransport:
         return [str(m.get("type")) for m in self.sent_json]
 
 
-def build_answer(stt: StreamingStt, tts: TtsProvider, history: Conversation):
+def build_answer(
+    stt: StreamingStt,
+    tts: TtsProvider,
+    history: Conversation,
+    endpointer: Endpointer | None = None,
+):
     """The same construction `app/routers/voice.py` uses for a real session,
     generalised over which stack's `stt` this call was handed: the free stack's
     own recovery wrapping (`RecoveringStt`, falling back to `GroqWhisper`'s batch
     endpoint) happens at the call site in `build_stack`, not here, so this
-    function does not have to know which stack it is building for."""
+    function does not have to know which stack it is building for.
+
+    `endpointer` exists for M5: `StreamingPipeline` builds its own
+    `Endpointer(semantic=True)` by default, a second, separate instance from the
+    one `one_turn` gives `VoiceSession`, and ablating semantic endpointing or VAD
+    aggressiveness has to change both or it is not really ablating anything, since
+    the session's own endpointer decides when a turn ends at all and the
+    pipeline's decides how much of the final transcription wait semantic
+    completeness can skip.
+    """
     pipeline = StreamingPipeline(
         stt=stt,
         turn=StreamedTurn(llm=ChatClient()),
         tts=tts,
         history=history,
+        endpointer=endpointer,
     )
     return pipeline.run
 
@@ -225,17 +240,26 @@ class Run:
     timed_out: bool = False
 
 
-async def one_turn(entry: dict, exporter: InMemorySpanExporter, stack: str = "free") -> Run:
+async def one_turn(
+    entry: dict,
+    exporter: InMemorySpanExporter,
+    stack: str = "free",
+    endpointer_factory=lambda: Endpointer(semantic=True),
+) -> Run:
     before = len(exporter.get_finished_spans())
 
     stt, tts = build_stack(stack)
     history = Conversation()
     transport = QueueTransport()
+    # Two instances, not one shared: `StreamingPipeline` and `VoiceSession` each
+    # own their own endpointer's mutable state (started, trailing silence so
+    # far), and sharing one between them would make each turn's second reader
+    # see state the first one already consumed.
     session = VoiceSession(
         transport=transport,
-        answer=build_answer(stt, tts, history),
+        answer=build_answer(stt, tts, history, endpointer=endpointer_factory()),
         filler=speak_filler,
-        endpointer=Endpointer(semantic=True),
+        endpointer=endpointer_factory(),
         bytes_per_second=tts.bytes_per_second,
         history=history,
     )

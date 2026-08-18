@@ -1600,4 +1600,129 @@ backend, so the frontend has no separate deploy step to forget. If the client
 grows a build, this decision is the one to revisit, and SPEC's architecture table
 still says Vercel until it is corrected.
 
+## 2026-08-11: WebSocket for the transport, not HTTP polling or WebRTC
+
+**Context:** the browser has to send a continuous stream of audio frames and
+receive audio, transcript text, and control messages back, in real time, in
+both directions, for the life of one conversation. Never formally written down
+before now, though implicit from `app/routers/voice.py`'s first commit; M6.4
+names the transport choice explicitly as a decision this file has to carry.
+
+**Decision:** one WebSocket per session, framed messages in both directions
+(binary audio frames, JSON control and text), matching the shape
+`vaani/protocol.py` and `web/capture-worklet.js` already implement.
+
+**Alternatives considered:** WebRTC, which is the standard answer for
+browser real-time audio and the one a production voice product would very
+likely use, rejected here on cost rather than merit: it needs a signalling
+server, STUN and likely TURN infrastructure for anything past a local network,
+and audio codec negotiation this project has no use for, since the audio
+never needs to survive a lossy, jittery public network path the way a video
+call does; it goes to one backend process over a normal TCP connection.
+Adopting it would have spent a meaningful slice of this project's own time
+budget on transport plumbing orthogonal to what it measures. HTTP long-polling
+or repeated small requests, rejected outright: the barge-in latency this
+project measures in milliseconds would be dominated by request overhead
+before any pipeline stage got a chance to matter.
+
+**Consequences:** the whole session lives on one connection, which is why
+`app/routers/voice.py`'s single-session lock (M3.8) is a simple
+process-wide `asyncio.Lock` rather than anything more elaborate: there is
+exactly one thing to serialise access to. A real product serving more than
+one caller at a time would need WebRTC's own infrastructure or a different
+scaling story; this decision is scoped to what a measurement project on a
+single free-tier instance needs, stated as a scope limit rather than implied
+as a production architecture.
+
+## 2026-08-11: Cascaded pipeline, not a speech-to-speech model
+
+**Context:** the two live architectural options for a real-time voice agent are
+a cascaded pipeline, STT then an LLM then TTS as separate stages, and a
+speech-to-speech model that reasons and generates directly in the audio
+domain. Non-goal 2 in SPEC already rules S2S out; this entry is the reasoning
+behind that line, requested by name in M6.4 rather than left implicit in a
+non-goals list nobody reads as a decision.
+
+**Decision:** cascaded. Every stage in this project, `vaani/stt.py`,
+`vaani/llm_turn.py`, `vaani/tts.py`, is a separate, independently swappable
+component behind its own interface, which is also what M4's whole waterfall
+comparison depends on: SPEC A4's chunked-versus-streaming difference and
+M4.4's Groq-versus-Sarvam comparison both live at seams a cascade has and an
+S2S model does not.
+
+**Alternatives considered:** a genuine speech-to-speech model (Moshi-shaped,
+or a hosted S2S API), rejected for three reasons that compound rather than
+stand alone. It needs a GPU this project's free-tier budget does not have, or
+a hosted S2S API this project's quota table does not carry credits for
+either. It collapses exactly the seams this project's contribution depends
+on measuring: there is no separate STT stage to swap for a streaming one, no
+separate TTS stage to fail over, nothing resembling SPEC A4's comparison at
+all. And this project's specific eligibility-checking task needs a real tool
+call against real fixture data with a real refusal path when the model
+cannot verify a figure (`vaani/tools.py`, `vaani/grounding.py`), which is a
+solved, ordinary problem for a text-reasoning LLM in a cascade and an open
+research problem for an audio-native model to do reliably.
+
+**Consequences:** the entire depth chapter, M5's ablation, is only a
+coherent thing to build because the pipeline is cascaded; an S2S model would
+have nothing resembling separable stages to ablate. The Depth Ladder's own
+item 3, "a speech-to-speech comparison row on the same corpus," is what
+keeps this decision from reading as never having considered the
+alternative: it is deferred, not dismissed, and M2.14's ConversationEngine
+seam (also deferred, this session, for time rather than merit) is what
+would let a future S2S arm be measured behind the same interface without
+replatforming the rest of this project.
+
+## 2026-08-18: The rest of SPEC's A1 through A10, where they are not their own entry
+
+**Context:** M6.4 asks this file to carry A1 through A10. Four already have entries
+whose title does not literally quote "SPEC A4" or similar: chunked-versus-streaming
+STT (A4, the STT interval and provider-fallback entries), the Sarvam credit
+discipline (A5, QUOTAS.md and M4.4's own entry), the synthesised corpus (A8, M4.2's
+entry), and the single-session lock (A10, M3.6 and M3.8's entries). Transport (A1)
+and cascaded-versus-S2S, adjacent to A2, are the two entries directly above this
+one. What remains, A2, A3, A6, A7, A9, is either settled by inheritance rather than
+choice, or already visible in tracked, non-DECISIONS files, and each is recorded
+here rather than left for a reader to assume was never considered.
+
+**A2, Tollgate and Dastavez do not exist yet.** Not a decision this project made;
+a fact about the portfolio's build order (this project is third of eleven,
+memory recorded in `read-sibling-repo-learnings-first`). `vaani/tools.py`'s
+fixture-backed schemes and `llm/`'s chassis client are what stand in for them.
+
+**A3, Python not Node.** Inherited from the chassis template this repo forked
+from (`M0.2`, "chassis fork cleaned"), not chosen fresh; Spanlight's own
+per-stage instrumentation is Python, and matching it rather than bridging two
+languages for one process is why this was never genuinely reconsidered.
+
+**A6, Kannada supported but unscored.** Enforced in the eval set's own header
+per the acceptance text, not in code; `docs/prior-art.md`'s HiACC note
+(M4.11) is the closest thing to a decision record for the boundary, since
+the exclusion is a labelling-integrity choice rather than an engineering one:
+this project's own DECISIONS entries on measured-not-guessed thresholds
+(the hedge delay, the STT interval) are the same discipline applied here to
+who is allowed to adjudicate a label rather than to a number.
+
+**A7, a comparison states its clock or is not made.** Applied, not merely
+stated: the X-Talk comparison (M4.14, `docs/prior-art.md`) publishes both
+clocks side by side rather than picking the flattering one, and M6.2's own
+task text does the same for the uncited industry figure it declines to
+repeat.
+
+**A9, Render free spins down, cold starts flagged.** `web/index.html`'s own
+cold-start message ("Render's free instance spins down when idle. This wait
+is a cold start.") is the acceptance criterion met in the client rather than
+in a benchmark script; M4.3's waterfall does not yet exclude a cold-started
+run from its own statistics, which is the gap M6.6's clean-browser
+verification is positioned to catch before publication.
+
+**Decision:** record all five here rather than open five near-empty entries for
+facts with no real alternative that was weighed, which would read as decisions
+where none were made.
+
+**Consequences:** the five above point at the file, entry, or fixture that is
+each one's actual evidence, so M6.4's own acceptance, "A1 through A10... in this
+file," is satisfiable by a reader following those pointers rather than by
+duplicating their content here.
+
 <!-- Add entries above this line. -->
