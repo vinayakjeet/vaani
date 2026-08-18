@@ -56,6 +56,7 @@ class ScenarioResult:
     reason: str
     calls: list[Call]
     reply_chars: int
+    crashed: bool = False
 
 
 def _recording_dispatch(calls: list[Call]):
@@ -196,14 +197,33 @@ async def main() -> int:
 
     results: list[ScenarioResult] = []
     for i, scenario in enumerate(scenarios, 1):
-        result = await run_scenario(scenario)
+        # A live network blip (a DNS failure, a dropped connection) must not cost
+        # every scenario already run: 50 scenarios is dozens of real calls, and
+        # losing all of them to one bad one is the same mistake bench/ablation.py
+        # made and was fixed for. Recorded as failed and crashed, not silently
+        # dropped, so the run's own JSON shows what happened.
+        try:
+            result = await run_scenario(scenario)
+        except Exception as exc:  # noqa: BLE001
+            result = ScenarioResult(
+                id=scenario["id"],
+                category=scenario["category"],
+                passed=False,
+                reason=f"crashed: {type(exc).__name__}: {exc}",
+                calls=[],
+                reply_chars=0,
+                crashed=True,
+            )
         results.append(result)
         mark = "PASS" if result.passed else "FAIL"
         print(f"  [{i}/{len(scenarios)}] {mark} {result.id}: {result.reason}", file=sys.stderr)
 
     passed = sum(1 for r in results if r.passed)
+    crashed = sum(1 for r in results if r.crashed)
     if results:
         print(f"\n{passed}/{len(results)} passed ({passed / len(results):.1%})")
+        if crashed:
+            print(f"{crashed} scenario(s) crashed rather than failed a check; see reason per row")
     else:
         print("no scenarios run")
 
@@ -223,6 +243,7 @@ async def main() -> int:
                     "passed": r.passed,
                     "reason": r.reason,
                     "reply_chars": r.reply_chars,
+                    "crashed": r.crashed,
                     "calls": [
                         {"name": c.name, "arguments": c.arguments, "error": c.error}
                         for c in r.calls
