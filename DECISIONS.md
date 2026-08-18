@@ -12,6 +12,58 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-18: Sarvam Saaras is not a request-response protocol, and the first build assumed it was
+
+**Context:** M4.4's second stack needed a streaming STT client for Sarvam Saaras. The
+public documentation for the streaming WebSocket endpoint was inconsistent across pages
+at the time this was written (two reference pages 404ed, a third gave a partial picture),
+so the vendor's own Python SDK (`sarvamai`) was added as a dev dependency rather than
+hand-rolling the wire format against a 100-credit balance with no way to iterate cheaply.
+
+The first implementation sent one message via `transcribe()` and awaited exactly one
+`recv()` per send, mirroring `ChunkedStt`'s own request-response shape. It hung
+indefinitely against the real socket: `connect()` and the first `transcribe()` both
+succeeded fast, and `recv()` then waited without returning anything, for as long as the
+call was allowed to run. QUOTAS.md's own note, written before this session, already said
+why: "Saaras streaming has its own VAD with adjustable sensitivity." The server decides on
+its own schedule when a transcript is worth emitting; it is not obligated to answer each
+message with exactly one response, and nothing in the SDK's exposed interface pairs a send
+to a specific reply.
+
+**Decision:** rebuilt around two concurrent tasks sharing one connection: a sender that
+pushes audio without waiting on anything, and a pump that reads every response the server
+produces, in arrival order, onto a queue `stream()` reads from and yields as partials.
+`RESPONSE_GRACE_S` (8s) bounds how long the read side waits for one more response once
+sending has finished, and it resets on every response actually received, so it is a
+silence bound rather than a guess at how long a real reply takes.
+
+A second bug surfaced in the same investigation, independent of the first: audio shorter
+than one send interval never reached the server before `flush()` asked it to finalize,
+because the interval-based sender only sends when the threshold is crossed and never had
+a catch-up step for whatever was still buffered when the frames ran out. That is most
+backchannels, "haan", "theek hai", and any utterance under 600ms. Fixed by always sending
+the remainder, even under threshold, immediately before flushing.
+
+**Alternatives considered:** hand-rolling the WebSocket protocol directly rather than
+depending on the vendor's SDK, rejected for the reason the SDK was chosen in the first
+place: the framing is not fully, consistently documented publicly, and confirming it by
+trial against a small, non-renewable credit balance is a worse bet than trusting the
+vendor's own maintained client, even though that client's own request-shaped `transcribe`
+helper turned out to invite exactly the wrong mental model here. Guessing a shorter, fixed
+total timeout instead of a resetting grace window, rejected because a fixed bound cannot
+tell a slow-but-still-arriving stream of responses from a genuinely finished one without
+either cutting a real reply short or waiting the full bound on every call regardless of
+how quickly it actually finished.
+
+**Consequences:** `tests/vaani/test_sarvam.py` scripts the server as something that pushes
+responses on its own schedule, not as something that answers each send, which is now the
+correct mental model for anyone extending this file. Verified for real exactly once, end
+to end, against `bench/corpus/scheme-pm-kisan.wav`: the returned transcript matched the
+corpus text's meaning exactly. The full twenty-utterance comparison run this milestone
+still needs is not done, deliberately: it spends real credits with no programmatic way to
+read the balance back, and that decision belongs to whoever can read the dashboard, not to
+a script running unattended.
+
 ## 2026-08-17: hedge_after_ms was below every measured sample, so the hedge fired on nearly every call
 
 **Context:** M3.5's own note said `hedge_after_ms` "belongs at the primary's measured p90

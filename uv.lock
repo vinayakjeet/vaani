@@ -768,6 +768,22 @@ wheels = [
 ]
 
 [[package]]
+name = "sarvamai"
+version = "0.1.30"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+    { name = "typing-extensions" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0a/a3/28325a6abd8e0c83e392bfadb06c1bb6d26cd134de2473e38caae745d8eb/sarvamai-0.1.30.tar.gz", hash = "sha256:e53b78ea695351102e880f727715a94cca4d2c7730d9663160066b7618e964d4", size = 175653, upload-time = "2026-08-03T12:34:05.792Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c5/65/45947ce30e325433e2960f428361e62bd4a69ce422c03c27191300204046/sarvamai-0.1.30-py3-none-any.whl", hash = "sha256:ab586559e041b8dbaa03a536d6c23383f6cda86e9ab9509519408cd54ea66f09", size = 361482, upload-time = "2026-08-03T12:34:04.623Z" },
+]
+
+[[package]]
 name = "spanlight"
 version = "0.1.0"
 source = { git = "https://github.com/vinayakjeet/spanlight#abe44e2b90fa855cb8c7a9c5e9e3bdb97488237b" }
@@ -915,6 +931,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "sarvamai" },
 ]
 
 [package.metadata]
@@ -941,6 +958,7 @@ dev = [
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "ruff", specifier = ">=0.7" },
+    { name = "sarvamai", specifier = ">=0.1.30" },
 ]
 
 [[package]]

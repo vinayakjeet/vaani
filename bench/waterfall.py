@@ -52,8 +52,8 @@ from vaani.llm_turn import StreamedTurn
 from vaani.pipeline import StreamingPipeline
 from vaani.protocol import FRAME_BYTES, FRAME_MS, ClientMessage, Frame, ServerMessage
 from vaani.session import Incoming, VoiceSession
-from vaani.stt import ChunkedStt, GroqWhisper, RecoveringStt
-from vaani.tts import EdgeTts, FailingOverTts
+from vaani.stt import ChunkedStt, GroqWhisper, RecoveringStt, StreamingStt
+from vaani.tts import EdgeTts, FailingOverTts, TtsProvider
 
 # Two of the twenty corpus utterances are in Devanagari, and structlog's console
 # renderer writes it straight to stdout. Windows' default stream encoding when
@@ -112,15 +112,41 @@ class QueueTransport:
         return [str(m.get("type")) for m in self.sent_json]
 
 
-def build_answer(transcriber: GroqWhisper, tts: FailingOverTts, history: Conversation):
-    """The same construction `app/routers/voice.py` uses for a real session."""
+def build_answer(stt: StreamingStt, tts: TtsProvider, history: Conversation):
+    """The same construction `app/routers/voice.py` uses for a real session,
+    generalised over which stack's `stt` this call was handed: the free stack's
+    own recovery wrapping (`RecoveringStt`, falling back to `GroqWhisper`'s batch
+    endpoint) happens at the call site in `build_stack`, not here, so this
+    function does not have to know which stack it is building for."""
     pipeline = StreamingPipeline(
-        stt=RecoveringStt(ChunkedStt(transcriber), transcriber),
+        stt=stt,
         turn=StreamedTurn(llm=ChatClient()),
         tts=tts,
         history=history,
     )
     return pipeline.run
+
+
+def build_stack(name: str) -> tuple[StreamingStt, TtsProvider]:
+    """The two providers one turn needs, chosen by name.
+
+    `sarvam` is credit-limited (QUOTAS.md), unlike `free`: nothing here calls it
+    except a run that named it explicitly, and there is no batch fallback to wrap
+    it in the way `GroqWhisper` wraps the free stack's own stream, because that
+    fallback would silently spend Groq credits on a run meant to measure Sarvam
+    alone.
+    """
+    if name == "free":
+        transcriber = GroqWhisper()
+        return (
+            RecoveringStt(ChunkedStt(transcriber), transcriber),
+            FailingOverTts(EdgeTts(), EdgeTts()),
+        )
+    if name == "sarvam":
+        from vaani.sarvam import SarvamBulbul, SarvamSaaras
+
+        return SarvamSaaras(), SarvamBulbul()
+    raise ValueError(f"unknown stack {name!r}, expected 'free' or 'sarvam'")
 
 
 # One bank for the whole run, matching `app/routers/voice.py`'s own scope: the clips
@@ -199,16 +225,15 @@ class Run:
     timed_out: bool = False
 
 
-async def one_turn(entry: dict, exporter: InMemorySpanExporter) -> Run:
+async def one_turn(entry: dict, exporter: InMemorySpanExporter, stack: str = "free") -> Run:
     before = len(exporter.get_finished_spans())
 
-    transcriber = GroqWhisper()
-    tts = FailingOverTts(EdgeTts(), EdgeTts())
+    stt, tts = build_stack(stack)
     history = Conversation()
     transport = QueueTransport()
     session = VoiceSession(
         transport=transport,
-        answer=build_answer(transcriber, tts, history),
+        answer=build_answer(stt, tts, history),
         filler=speak_filler,
         endpointer=Endpointer(semantic=True),
         bytes_per_second=tts.bytes_per_second,
@@ -335,10 +360,13 @@ def summarise(runs: list[Run]) -> dict:
     return summary
 
 
-def render(summary: dict) -> str:
+def render(summary: dict, stack: str = "free") -> str:
+    stack_label = (
+        "free stack (Groq + EdgeTts)" if stack == "free" else "sarvam stack (Saaras + Bulbul)"
+    )
     lines = [
         f"Waterfall over {summary['n_turns']} turns "
-        f"({summary['n_utterances']} corpus utterances), free stack (Groq + EdgeTts).",
+        f"({summary['n_utterances']} corpus utterances), {stack_label}.",
         "",
     ]
     if summary["heard_nothing"] or summary["no_reply"]:
@@ -402,7 +430,7 @@ def render(summary: dict) -> str:
     return "\n".join(lines)
 
 
-async def measure(runs_per_utterance: int) -> tuple[list[Run], dict]:
+async def measure(runs_per_utterance: int, stack: str = "free") -> tuple[list[Run], dict]:
     corpus = load_corpus()
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -417,7 +445,7 @@ async def measure(runs_per_utterance: int) -> tuple[list[Run], dict]:
     done = 0
     for _ in range(runs_per_utterance):
         for entry in corpus:
-            results.append(await one_turn(entry, exporter))
+            results.append(await one_turn(entry, exporter, stack=stack))
             done += 1
             print(f"  {done}/{total}: {entry['id']}", file=sys.stderr)
 
@@ -441,17 +469,25 @@ async def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--runs", type=int, default=1, help="passes over the full corpus")
+    parser.add_argument(
+        "--stack",
+        choices=("free", "sarvam"),
+        default="free",
+        help="free is Groq+EdgeTts, no cost; sarvam is Saaras+Bulbul, credit-limited "
+        "per QUOTAS.md and only ever run when named explicitly",
+    )
     parser.add_argument("--json", type=Path, default=Path(__file__).with_suffix(".json"))
     args = parser.parse_args()
 
-    runs, extra = await measure(args.runs)
+    runs, extra = await measure(args.runs, stack=args.stack)
     summary = summarise(runs)
 
     args.json.write_text(
-        json.dumps({"summary": summary, **extra}, ensure_ascii=False, indent=2) + "\n",
+        json.dumps({"summary": summary, "stack": args.stack, **extra}, ensure_ascii=False, indent=2)
+        + "\n",
         encoding="utf-8",
     )
-    print(render(summary))
+    print(render(summary, stack=args.stack))
     print(f"\nRaw per-run data: {args.json}")
     return 0
 

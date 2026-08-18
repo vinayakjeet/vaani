@@ -45,6 +45,13 @@ dev = [
     # the smart-turn arm that can be wrong while every other test stays green.
     "numpy>=2.0",
     "miniaudio>=1.71",
+    # The second waterfall column (M4.4) only, never the deployed free stack: Sarvam
+    # is a credit-limited comparison arm bench/waterfall.py runs on demand, not a
+    # provider app/routers/voice.py depends on. The vendor's own SDK rather than a
+    # hand-rolled client, because the streaming STT socket's exact wire framing is
+    # not fully documented publicly and a framing mistake against a 100-credit
+    # balance is not a mistake worth making twice.
+    "sarvamai>=0.1.30",
 ]
 
 [tool.uv]
