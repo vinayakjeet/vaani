@@ -333,10 +333,13 @@ made p95 worse and we would have concluded local synthesis does not help.
 ### Finding 2: SPEC A7 is answerable, with a real measured number
 
 A7 says the 1.4 to 1.7 second industry median is uncited and must be sourced or dropped.
-Openbenchmarks publishes **time to first audio byte measured from the call's own audio across
-five commercial platforms over 2078 usable turns**, lowest median **1296ms (Telnyx)**, with
-ElevenLabs, Bland, Vapi and Retell alongside. That is a dated, first-party-measured,
-reproducible figure rather than a vendor claim, and it is the comparison the chart should use.
+[Openbenchmarks](https://openbenchmarks.com/voice-agent-latency) publishes **time to first
+audio byte measured from the call's own audio across five commercial platforms over 2078
+usable turns**: Telnyx 1296ms (419 turns), ElevenLabs 1424ms (429), Bland AI 1520ms (429),
+Vapi 1558ms (382), Retell AI 1740ms (419), each with its own p95 alongside. Verified live
+2026-08-18: the per-platform turn counts sum to exactly 2078. That is a dated,
+first-party-measured, reproducible figure rather than a vendor claim, and it is the
+comparison the chart should use.
 
 It also reframes our target honestly: p50 under 500ms would be roughly **2.6 times faster than
 the best measured commercial median**, which is a strong claim and should make us more

@@ -12,6 +12,33 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-18: The industry-median figure is Openbenchmarks, sourced and dated
+
+**Context:** SPEC A7 flagged the 1.4 to 1.7 second industry-median figure used to motivate
+this project's own budget as uncited, and said to source it or drop it. `docs/prior-art.md`
+already named Openbenchmarks with the right numbers from an earlier review, but with no URL,
+which fails A7's own bar the same way an uncited number would: nobody reading it could check
+it.
+
+**Decision:** [Openbenchmarks' voice-agent latency benchmark](https://openbenchmarks.com/voice-agent-latency)
+is the citation. It measures time to first audio byte from the call's own recorded audio
+across five commercial platforms: Telnyx 1296ms median over 419 turns, ElevenLabs 1424ms over
+429, Bland AI 1520ms over 429, Vapi 1558ms over 382, Retell AI 1740ms over 419. Checked live
+2026-08-18 that the five turn counts sum to exactly the 2078 figure already being quoted,
+which is what a citation being real rather than remembered looks like. Their measurement
+includes PSTN transport this project's own clock does not pay, so both are stated together
+rather than compared as though they were the same clock: this project's own sub-1000ms p50
+target would be roughly 2.6 times faster than the best of the five, which argues for
+suspecting our own numbers harder, not for a victory lap.
+
+**Alternatives considered:** dropping the comparison entirely rather than sourcing it, which
+SPEC A7 offers as the fallback. Rejected because the number is real, checkable, and useful
+context for a reader with no other way to judge whether 1000ms is an ambitious target or an
+easy one; the fix for an uncited number is a citation, not silence, when one exists.
+
+**Consequences:** README's Problem section and `docs/prior-art.md` both cite this now. M6.2 is
+closed.
+
 ## 2026-08-18: check_eligibility was never actually being called, and the eval that was supposed to catch it is what caught it
 
 **Context:** M4.7's eval runner (`eval/run_eval.py`), wrapping `vaani.llm_turn.dispatch`
