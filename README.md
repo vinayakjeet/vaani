@@ -143,9 +143,23 @@ already ready by the time it finishes, so it never shortens the wait it
 exists to cover and sometimes lengthens it. That is a genuine finding about
 M3.5's filler design, not about streaming, and the natural fix (make the
 filler interruptible by the real answer, then re-measure) is BACKLOG's
-M5.2c, deliberately not done in the same pass that found the problem. Full
-account, including how the two prior measurement bugs were caught, in
-DECISIONS.md.
+M5.2c. Full account, including how the two prior measurement bugs were
+caught, in DECISIONS.md.
+
+**Eval set**, 50 scripted scenarios across 10 categories, `eval/build_scenarios.py`
+and `eval/run_eval.py`: stable at **80% (40/50)** across three independent live
+runs, after fixing two real bugs the first run itself surfaced (a required
+income field that should not have been required, a runner that silently
+dropped rejected tool calls from its own record) and correcting 13 of the
+eval's own labels, which is why the very first run scored 48%. Every
+remaining failure falls into four already-understood categories, none a
+schema or label defect: the model sometimes does not finish the tool chain it
+started, sometimes sends a scheme's display name instead of its id, and the
+fixture `find_schemes`'s keyword matching both misses a real scheme on
+unusual phrasing and, once, matched a disability-pension question to the
+old-age-pension scheme on the shared word "pension." **Not a CI gate yet**:
+the labels need a human review pass before 80% means anything gate-worthy,
+per this file's own header and Spanlight's 35.8%-mislabeled-corpus lesson.
 
 ## Technical decisions
 
