@@ -93,7 +93,7 @@ def test_an_unknown_scheme_names_the_ones_that_exist() -> None:
     "arguments",
     [
         {"scheme_id": "pm-kisan"},
-        {"scheme_id": "pm-kisan", "applicant": {"state": "Bihar"}},
+        {"scheme_id": "pm-jay", "applicant": {"state": "Bihar"}},
         {"scheme_id": "pm-kisan", "applicant": applicant(annual_income_inr="bahut zyada")},
         {"scheme_id": "pm-kisan", "applicant": applicant(annual_income_inr=-5000)},
         {"scheme_id": "pm-kisan", "applicant": applicant(pet_name="Sheru")},
@@ -101,9 +101,57 @@ def test_an_unknown_scheme_names_the_ones_that_exist() -> None:
 )
 def test_unusable_arguments_are_rejected_at_the_boundary(arguments: dict[str, object]) -> None:
     """A model invents fields, sends strings where integers go, and occasionally
-    sends a negative income. None of that may reach the rules."""
+    sends a negative income. None of that may reach the rules.
+
+    The second case is missing income against pm-jay, which is income-gated, not
+    against pm-kisan, which is not: see
+    test_missing_income_is_fine_for_a_scheme_that_does_not_need_it below for the
+    case this parametrisation used to cover by accident before the fix."""
     with pytest.raises(ToolError):
         check_eligibility(arguments)
+
+
+def test_the_word_unknown_is_treated_as_absent_income_not_rejected() -> None:
+    """Verified live 2026-08-18: a model asked about a land-only scheme sends
+    `annual_income_inr: "unknown"` about as often as it sends null. Distinct from
+    a vague amount like "bahut kam", which stays rejected two tests down: this is
+    a model saying it has no figure, not naming one this function should guess at."""
+    result = check_eligibility(
+        {
+            "scheme_id": "pm-kisan",
+            "applicant": {
+                "state": "Bihar",
+                "annual_income_inr": "unknown",
+                "land_holding_acres": 2.0,
+            },
+        }
+    )
+    assert result.eligible is True
+
+
+def test_missing_income_is_fine_for_a_scheme_that_does_not_need_it() -> None:
+    """pm-kisan checks land only. A model asked about it sends `annual_income_inr:
+    null` rather than omitting the key, verified live 2026-08-18 against
+    openai/gpt-oss-120b, and the schema must accept that rather than reject a
+    query the rule was never going to use the figure for."""
+    result = check_eligibility(
+        {
+            "scheme_id": "pm-kisan",
+            "applicant": {"state": "Bihar", "annual_income_inr": None, "land_holding_acres": 2.0},
+        }
+    )
+    assert result.eligible is True
+
+
+def test_missing_income_against_an_income_gated_scheme_names_the_gap() -> None:
+    """pm-jay checks income. Omitting it must not silently default to 0 and pass
+    an applicant whose real income was simply never asked for."""
+    with pytest.raises(ToolError) as raised:
+        check_eligibility(
+            {"scheme_id": "pm-jay", "applicant": {"state": "Bihar", "annual_income_inr": None}}
+        )
+
+    assert "annual_income_inr" in str(raised.value)
 
 
 def test_a_rejection_never_repeats_the_value_it_rejected() -> None:

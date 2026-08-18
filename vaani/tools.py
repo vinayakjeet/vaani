@@ -115,11 +115,42 @@ def _absent_when_spelled_out(value: Any) -> Any:
 OptionalText = Annotated[str | None, BeforeValidator(_absent_when_spelled_out)]
 
 
+def _absent_income_words(value: Any) -> Any:
+    """Explicit absence, not a guessed quantity. A model asked for an income it was
+    never given writes "unknown" about as often as it writes a JSON null, verified
+    live 2026-08-18 against openai/gpt-oss-120b on a query whose scheme does not even
+    use income. Distinct from a vague amount like "bahut kam", which `Rupees`'s own
+    `_from_spoken_number` still rejects a few lines up: that names a real quantity
+    this code is not trusted to estimate, where this names the absence of one.
+
+    Applied outside `Rupees` rather than inside it, on the union `Rupees | None`
+    directly: a `BeforeValidator` inside `Rupees` returning `None` still has to
+    clear `Rupees`'s own `int` requirement afterward and fails it, since `None` is
+    not a valid integer. Running here, before the union picks a branch, lets
+    "unknown" resolve to the union's `None` branch cleanly instead.
+    """
+    if isinstance(value, str) and value.strip().casefold() in {
+        "unknown", "not applicable", "n/a", "na",
+    }:
+        return None
+    return value
+
+
+OptionalRupees = Annotated[Rupees | None, BeforeValidator(_absent_income_words)]
+
+
 class Applicant(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     state: str
-    annual_income_inr: Rupees
+    # Optional, not defaulted to 0: not every scheme's rule needs income at
+    # all (pm-kisan checks land only), and a model asked about one of those
+    # sends `null` rather than omitting the key, verified live 2026-08-18
+    # against `openai/gpt-oss-120b`. Defaulting a missing income to 0 would
+    # make every applicant with unstated income pass an income-gated scheme
+    # by accident; `check_eligibility` raises instead, only when a rule
+    # actually needs the figure and it was not given.
+    annual_income_inr: OptionalRupees = None
     land_holding_acres: Acres = 0.0
     category: str = "general"
 
@@ -225,6 +256,15 @@ def check_eligibility(arguments: dict[str, Any]) -> Eligibility:
     reasons: list[str] = []
 
     if rule.max_annual_income_inr is not None:
+        if request.applicant.annual_income_inr is None:
+            # A missing figure the rule actually needs, not an absent rule: SPEC
+            # S5's "say the check could not be completed" applies here too, one
+            # level more specific than the no-thresholds-at-all case below, so the
+            # model is told exactly which figure to go back and ask for.
+            raise ToolError(
+                f"annual_income_inr is required to check scheme {request.scheme_id!r} "
+                "against its income limit; ask the applicant for it and try again"
+            )
         within = request.applicant.annual_income_inr <= rule.max_annual_income_inr
         checks.append(within)
         reasons.append(
