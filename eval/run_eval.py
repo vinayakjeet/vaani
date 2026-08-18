@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from llm import ChatClient  # noqa: E402
 from vaani.llm_turn import StreamedTurn  # noqa: E402
+from vaani.tools import ToolError  # noqa: E402
 from vaani.tools import dispatch as real_dispatch  # noqa: E402
 
 SCENARIOS_PATH = Path(__file__).resolve().parent / "scenarios.json"
@@ -44,6 +45,7 @@ class Call:
     name: str
     arguments: dict
     result: object
+    error: str | None = None
 
 
 @dataclass
@@ -58,7 +60,17 @@ class ScenarioResult:
 
 def _recording_dispatch(calls: list[Call]):
     def _dispatch(name: str, arguments: dict) -> object:
-        result = real_dispatch(name, arguments)
+        # A ToolError (bad scheme_id, arguments the schema rejects) is a real
+        # attempt, not a non-event, and `_result_of` in llm_turn.py depends on
+        # it propagating so the model sees a failure it can retry against.
+        # Recording it here, before re-raising, is what lets `check()` tell
+        # "check_eligibility was never attempted" apart from "it was attempted
+        # and failed" instead of both reading as the tool never being called.
+        try:
+            result = real_dispatch(name, arguments)
+        except ToolError as exc:
+            calls.append(Call(name=name, arguments=dict(arguments), result=None, error=str(exc)))
+            raise
         calls.append(Call(name=name, arguments=dict(arguments), result=result))
         return result
 
@@ -90,7 +102,13 @@ def check(expected: dict, calls: list[Call], reply: str) -> tuple[bool, str]:
     if not reply.strip():
         return False, "reply was empty"
 
+    # Every attempt, successful or not: a call that failed schema validation was
+    # still a real attempt, and a scenario asking for `tool: None` must fail if
+    # one was made even though it never produced a usable result.
     tool_names = [c.name for c in calls]
+    # Only calls that actually returned something: what `scheme_id`/`eligible`
+    # can be checked against.
+    ok_calls = [c for c in calls if c.error is None]
 
     if "tool" in expected:
         wanted = expected["tool"]
@@ -100,17 +118,31 @@ def check(expected: dict, calls: list[Call], reply: str) -> tuple[bool, str]:
         elif wanted not in tool_names:
             return False, f"expected {wanted!r} to be called, got {tool_names}"
 
+    # Distinct from "tool": None. find_schemes is a harmless lookup and cannot
+    # itself supply a number, so a scenario that only cares whether a figure or
+    # a verdict could have been invented should forbid check_eligibility
+    # specifically rather than every tool, or it fails on a model correctly
+    # verifying that nothing matches before saying so.
+    if "forbidden_tool" in expected and expected["forbidden_tool"] in tool_names:
+        return False, f"expected {expected['forbidden_tool']!r} not to be called, got {tool_names}"
+
     if "scheme_id" in expected:
-        matching = [c for c in calls if c.name == "check_eligibility"]
+        matching = [c for c in ok_calls if c.name == "check_eligibility"]
         if not matching:
+            failed = [c for c in calls if c.name == "check_eligibility"]
+            if failed:
+                return False, f"check_eligibility was attempted and failed: {failed[-1].error}"
             return False, "expected check_eligibility, none was called"
         got = matching[-1].arguments.get("scheme_id")
         if got != expected["scheme_id"]:
             return False, f"expected scheme_id={expected['scheme_id']!r}, got {got!r}"
 
     if "eligible" in expected:
-        matching = [c for c in calls if c.name == "check_eligibility"]
+        matching = [c for c in ok_calls if c.name == "check_eligibility"]
         if not matching:
+            failed = [c for c in calls if c.name == "check_eligibility"]
+            if failed:
+                return False, f"check_eligibility was attempted and failed: {failed[-1].error}"
             return False, "expected check_eligibility, none was called"
         # dispatch() returns model_dump()'d JSON, a dict, never the pydantic object.
         got_eligible = matching[-1].result.get("eligible")
@@ -119,7 +151,7 @@ def check(expected: dict, calls: list[Call], reply: str) -> tuple[bool, str]:
 
     if expected.get("scheme_id_in_results") is not None:
         wanted = expected["scheme_id_in_results"]
-        matching = [c for c in calls if c.name == "find_schemes"]
+        matching = [c for c in ok_calls if c.name == "find_schemes"]
         if not matching:
             return False, "expected find_schemes, none was called"
         ids = [s["scheme_id"] for s in matching[-1].result.get("schemes", [])]
@@ -135,13 +167,16 @@ def check(expected: dict, calls: list[Call], reply: str) -> tuple[bool, str]:
     if expected.get("no_eligibility_claim") and any(c.name == "check_eligibility" for c in calls):
         return False, "expected no eligibility check, but check_eligibility was called"
 
-    # A structural proxy, not a semantic one: if no tool was called at all, no
-    # tool-sourced figure exists for the reply to state, which is the condition
-    # `vaani.grounding` itself enforces at synthesis time on the real pipeline.
-    # This does not re-verify grounding; it only confirms the scenario reached
-    # the same starting condition grounding depends on.
-    if expected.get("no_uncalled_figure") and calls:
-        return False, f"expected no tool call (nothing to source a figure), got {tool_names}"
+    # A structural proxy, not a semantic one: only check_eligibility's result can
+    # supply a number (a threshold, a confidence), so only its presence means a
+    # figure was sourced for the reply to state. find_schemes returns scheme
+    # names and ids, never a number, so calling it is not the risk this checks
+    # for. `vaani.grounding` enforces the real invariant, reply text against
+    # tool-sourced figures, at synthesis time on the live pipeline; this does
+    # not re-verify that, it only confirms the scenario reached the same
+    # starting condition grounding depends on.
+    if expected.get("no_uncalled_figure") and any(c.name == "check_eligibility" for c in calls):
+        return False, f"expected no check_eligibility call: {tool_names}"
 
     return True, "ok"
 
@@ -188,7 +223,10 @@ async def main() -> int:
                     "passed": r.passed,
                     "reason": r.reason,
                     "reply_chars": r.reply_chars,
-                    "calls": [{"name": c.name, "arguments": c.arguments} for c in r.calls],
+                    "calls": [
+                        {"name": c.name, "arguments": c.arguments, "error": c.error}
+                        for c in r.calls
+                    ],
                 }
                 for r in results
             ],

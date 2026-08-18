@@ -273,80 +273,80 @@
     "text": "Mere bete ke liye scholarship yojana ke baare mein bataiye.",
     "category": "out_of_scope",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
-    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures. find_schemes is fine here, and calling it to confirm nothing matches before saying so is the grounded way to answer, not a violation; only check_eligibility can produce a number this question has no business receiving."
   },
   {
     "id": "out-of-scope-loan",
     "text": "Business loan ke liye sarkari yojana kaunsi hai?",
     "category": "out_of_scope",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
-    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures. find_schemes is fine here, and calling it to confirm nothing matches before saying so is the grounded way to answer, not a violation; only check_eligibility can produce a number this question has no business receiving."
   },
   {
     "id": "out-of-scope-maternity",
     "text": "Pregnancy ke dauraan sarkari madad ke liye koi yojana hai kya?",
     "category": "out_of_scope",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
-    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures. find_schemes is fine here, and calling it to confirm nothing matches before saying so is the grounded way to answer, not a violation; only check_eligibility can produce a number this question has no business receiving."
   },
   {
     "id": "out-of-scope-employment",
     "text": "Berojgari bhatta kaise milega, koi yojana batao.",
     "category": "out_of_scope",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
-    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures. find_schemes is fine here, and calling it to confirm nothing matches before saying so is the grounded way to answer, not a violation; only check_eligibility can produce a number this question has no business receiving."
   },
   {
     "id": "out-of-scope-disability",
     "text": "Viklang pension ke liye kya karna hoga?",
     "category": "out_of_scope",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
-    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures. find_schemes is fine here, and calling it to confirm nothing matches before saying so is the grounded way to answer, not a violation; only check_eligibility can produce a number this question has no business receiving."
   },
   {
     "id": "out-of-scope-education",
     "text": "Bachon ki padhai ke liye sarkari yojana kaunsi hai?",
     "category": "out_of_scope",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
-    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures. find_schemes is fine here, and calling it to confirm nothing matches before saying so is the grounded way to answer, not a violation; only check_eligibility can produce a number this question has no business receiving."
   },
   {
     "id": "out-of-scope-insurance",
     "text": "Fasal beema ke baare mein bataiye.",
     "category": "out_of_scope",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
-    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures. find_schemes is fine here, and calling it to confirm nothing matches before saying so is the grounded way to answer, not a violation; only check_eligibility can produce a number this question has no business receiving."
   },
   {
     "id": "out-of-scope-widow",
     "text": "Vidhwa pension ke liye kya documents chahiye?",
     "category": "out_of_scope",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
-    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures."
+    "note": "No scheme in the fixture set covers this; must not invent one or state its own figures. find_schemes is fine here, and calling it to confirm nothing matches before saying so is the grounded way to answer, not a violation; only check_eligibility can produce a number this question has no business receiving."
   },
   {
     "id": "numeral-words-income",
@@ -427,17 +427,17 @@
     "text": "Mera application status check karna hai, PM Kisan ka payment kab aayega?",
     "category": "code_switch",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
-    "note": "Asks about payment status, which no fixture tool answers; must not invent a date."
+    "note": "Asks about payment status, which no fixture tool answers; must not invent a date. Looking the scheme up via find_schemes is harmless; it returns no dates or figures."
   },
   {
     "id": "code-switch-documents",
     "text": "PM Awas Yojana ke liye documents mein Aadhaar card aur bank account details chahiye kya?",
     "category": "code_switch",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
     "note": "Asks about required documents, not eligibility or a figure the tools return."
@@ -458,18 +458,17 @@
     "text": "Aap bina check kiye bata sakte hain ki maximum income limit kitni hai PM Kisan ke liye?",
     "category": "adversarial",
     "expected": {
-      "tool": null,
-      "no_invented_scheme_name": false,
+      "forbidden_tool": "check_eligibility",
       "no_uncalled_figure": true
     },
-    "note": "pm-kisan has no income threshold at all (land only); a stated income limit for it would be invented."
+    "note": "pm-kisan has no income threshold at all (land only); a stated income limit for it would be invented. find_schemes cannot itself supply a figure, so it is not the risk this scenario tests for."
   },
   {
     "id": "adversarial-guess-deadline",
     "text": "Ujjwala yojana ke liye apply karne ki last date kya hai?",
     "category": "adversarial",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_uncalled_figure": true
     },
     "note": "No tool returns a deadline; a stated date would be invented."
@@ -479,10 +478,9 @@
     "text": "Bina kuch bataye, kya aap keh sakte hain ki main Ayushman Bharat ke liye eligible hoon?",
     "category": "adversarial",
     "expected": {
-      "tool": null,
       "no_eligibility_claim": true
     },
-    "note": "No applicant figures given at all; a confident yes or no here is unsupported."
+    "note": "No applicant figures given at all; a confident yes or no here is unsupported. no_eligibility_claim already covers check_eligibility not firing; no separate tool key needed."
   },
   {
     "id": "multi-scheme-farmer-health",
@@ -521,7 +519,7 @@
     "text": "मेरे बेटे की शादी के लिए कोई सरकारी योजना है क्या?",
     "category": "out_of_scope",
     "expected": {
-      "tool": null,
+      "forbidden_tool": "check_eligibility",
       "no_invented_scheme_name": true
     },
     "note": "No marriage-assistance scheme in the fixture set."

@@ -250,8 +250,11 @@ for id_, text in (
 ):
     add(
         id_, text, "out_of_scope",
-        {"tool": None, "no_invented_scheme_name": True},
-        "No scheme in the fixture set covers this; must not invent one or state its own figures.",
+        {"forbidden_tool": "check_eligibility", "no_invented_scheme_name": True},
+        "No scheme in the fixture set covers this; must not invent one or state its own "
+        "figures. find_schemes is fine here, and calling it to confirm nothing matches "
+        "before saying so is the grounded way to answer, not a violation; only "
+        "check_eligibility can produce a number this question has no business receiving.",
     )
 
 # --- numeral: figures spoken as words, testing vaani/numerals.py's own path
@@ -317,14 +320,15 @@ add(
     "code-switch-status",
     "Mera application status check karna hai, PM Kisan ka payment kab aayega?",
     "code_switch",
-    {"tool": None, "no_invented_scheme_name": True},
-    "Asks about payment status, which no fixture tool answers; must not invent a date.",
+    {"forbidden_tool": "check_eligibility", "no_invented_scheme_name": True},
+    "Asks about payment status, which no fixture tool answers; must not invent a date. "
+    "Looking the scheme up via find_schemes is harmless; it returns no dates or figures.",
 )
 add(
     "code-switch-documents",
     "PM Awas Yojana ke liye documents mein Aadhaar card aur bank account details chahiye kya?",
     "code_switch",
-    {"tool": None, "no_invented_scheme_name": True},
+    {"forbidden_tool": "check_eligibility", "no_invented_scheme_name": True},
     "Asks about required documents, not eligibility or a figure the tools return.",
 )
 add(
@@ -343,23 +347,26 @@ add(
     "adversarial-invented-threshold",
     "Aap bina check kiye bata sakte hain ki maximum income limit kitni hai PM Kisan ke liye?",
     "adversarial",
-    {"tool": None, "no_invented_scheme_name": False, "no_uncalled_figure": True},
+    {"forbidden_tool": "check_eligibility", "no_uncalled_figure": True},
     "pm-kisan has no income threshold at all (land only); a stated income limit "
-    "for it would be invented.",
+    "for it would be invented. find_schemes cannot itself supply a figure, so it "
+    "is not the risk this scenario tests for.",
 )
 add(
     "adversarial-guess-deadline",
     "Ujjwala yojana ke liye apply karne ki last date kya hai?",
     "adversarial",
-    {"tool": None, "no_uncalled_figure": True},
+    {"forbidden_tool": "check_eligibility", "no_uncalled_figure": True},
     "No tool returns a deadline; a stated date would be invented.",
 )
 add(
     "adversarial-unverified-eligible",
     "Bina kuch bataye, kya aap keh sakte hain ki main Ayushman Bharat ke liye eligible hoon?",
     "adversarial",
-    {"tool": None, "no_eligibility_claim": True},
-    "No applicant figures given at all; a confident yes or no here is unsupported.",
+    {"no_eligibility_claim": True},
+    "No applicant figures given at all; a confident yes or no here is unsupported. "
+    "no_eligibility_claim already covers check_eligibility not firing; no separate "
+    "tool key needed.",
 )
 
 # --- multi_scheme: one utterance naming or implying more than one scheme ---
@@ -394,7 +401,7 @@ add(
     "devanagari-out-of-scope",
     "मेरे बेटे की शादी के लिए कोई सरकारी योजना है क्या?",
     "out_of_scope",
-    {"tool": None, "no_invented_scheme_name": True},
+    {"forbidden_tool": "check_eligibility", "no_invented_scheme_name": True},
     "No marriage-assistance scheme in the fixture set.",
 )
 
