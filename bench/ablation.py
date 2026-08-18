@@ -63,6 +63,13 @@ class ArmRun:
     first_answer_heard_ms: float | None
     reply_chars: int
     error: str | None = None
+    # None on the unstreamed arm, which has no filler mechanism at all. True or
+    # False on a streamed arm: whether M3.5's acknowledgement fired ahead of the
+    # real answer on this turn. `first_answer_heard_ms` is deliberately queued
+    # behind whatever filler is still playing (`TurnClock.mark_heard`), so this
+    # field is what lets a reader check that theory against this run's own data
+    # rather than trusting the explanation on its own.
+    filler_spoken: bool | None = None
 
 
 async def run_unstreamed(entry: dict) -> ArmRun:
@@ -131,6 +138,7 @@ async def run_streamed_arm(arm: str, entry: dict, exporter: InMemorySpanExporter
         utterance_id=entry["id"],
         first_answer_heard_ms=run.first_answer_heard_ms,
         reply_chars=run.reply_chars,
+        filler_spoken=run.filler_spoken,
     )
 
 
@@ -182,11 +190,14 @@ async def measure(n: int, arms: list[str]) -> list[ArmRun]:
 def summarise(results: list[ArmRun], baseline_arm: str) -> dict:
     by_arm: dict[str, list[float]] = {}
     failures: dict[str, int] = {}
+    filler: dict[str, list[bool]] = {}
     for r in results:
         if r.first_answer_heard_ms is not None:
             by_arm.setdefault(r.arm, []).append(r.first_answer_heard_ms)
         else:
             failures[r.arm] = failures.get(r.arm, 0) + 1
+        if r.filler_spoken is not None:
+            filler.setdefault(r.arm, []).append(r.filler_spoken)
 
     baseline_median = statistics.median(by_arm[baseline_arm]) if by_arm.get(baseline_arm) else None
 
@@ -200,13 +211,27 @@ def summarise(results: list[ArmRun], baseline_arm: str) -> dict:
         summary["arms"][arm] = {
             "n": len(values),
             "median_ms": round(median, 1),
+            "p95_ms": round(percentile(values, 95), 1),
             "min_ms": round(min(values), 1),
             "max_ms": round(max(values), 1),
             "delta_vs_baseline_ms": (
                 round(baseline_median - median, 1) if baseline_median is not None else None
             ),
+            "filler_rate": (
+                round(sum(filler[arm]) / len(filler[arm]), 2) if filler.get(arm) else None
+            ),
         }
     return summary
+
+
+def percentile(values: list[float], pct: int) -> float:
+    """Nearest rank, honest at n=20 rather than interpolating a value never
+    measured. Same reasoning `bench/waterfall.py`'s own p95 already applies."""
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = -(-pct * len(ordered) // 100)  # ceil division without importing math
+    return ordered[min(rank, len(ordered)) - 1]
 
 
 def render(summary: dict, baseline_arm: str) -> str:
@@ -214,14 +239,14 @@ def render(summary: dict, baseline_arm: str) -> str:
         f"Ablation, n={summary['n_per_arm'].get(baseline_arm, 0)} per arm "
         f"(default size; see this script's own docstring for what n=20 would cost).",
         "",
-        f"{'arm':<20}{'n':>4}{'median_ms':>12}{'min_ms':>10}{'max_ms':>10}"
+        f"{'arm':<20}{'n':>4}{'median_ms':>12}{'p95_ms':>10}{'min_ms':>10}{'max_ms':>10}"
         f"{'bought_vs_' + baseline_arm:>22}",
     ]
     for arm, row in summary["arms"].items():
         delta = row["delta_vs_baseline_ms"]
         delta_str = "" if delta is None or arm == baseline_arm else f"{delta:+.1f}ms"
         lines.append(
-            f"{arm:<20}{row['n']:>4}{row['median_ms']:>12}{row['min_ms']:>10}"
+            f"{arm:<20}{row['n']:>4}{row['median_ms']:>12}{row['p95_ms']:>10}{row['min_ms']:>10}"
             f"{row['max_ms']:>10}{delta_str:>22}"
         )
     return "\n".join(lines)
