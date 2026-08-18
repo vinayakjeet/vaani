@@ -284,9 +284,27 @@ async def speak_within(
         logger.info(
             "budget.filler", deadline_ms=deadline_ms, elapsed_ms=round(clock.elapsed_ms())
         )
-        async for chunk in filler():
-            clock.mark_audio(is_answer=False)
-            yield chunk
+        # Cut short, not run to its own end. `first` is a second, independent
+        # future watching the same queue `driver` fills, so it keeps resolving
+        # in the background while this loop is mid-filler. The bench/ablation.py
+        # n=20 run found that the previous version, `async for chunk in
+        # filler(): yield chunk` with no such check, let the filler finish in
+        # full regardless of how much of the real answer was already
+        # synthesised by then, which made the streamed pipeline measure slower
+        # than the naive baseline: `TurnClock.mark_heard` queues the answer
+        # behind whatever filler audio is still unplayed, and a filler that
+        # never yields early never shortens that queue. `filler()`'s own
+        # generator is closed either way, an ordinary exhaustion or this break,
+        # since `aclose` on one already finished costs nothing.
+        filler_gen = filler()
+        try:
+            async for chunk in filler_gen:
+                clock.mark_audio(is_answer=False)
+                yield chunk
+                if first.done():
+                    break
+        finally:
+            await filler_gen.aclose()
 
     try:
         item = await first

@@ -96,6 +96,42 @@ async def test_filler_does_not_count_as_the_answer() -> None:
     assert clock.first_audio_ms < clock.first_answer_audio_ms
 
 
+async def test_filler_stops_once_the_real_answer_is_ready() -> None:
+    """M5.2c. The previous version ran `filler()` to its own exhaustion no matter
+    how much of the real answer was already synthesised by the time it finished,
+    which `bench/ablation.py`'s n=20 run showed made the streamed pipeline measure
+    slower than the naive unstreamed baseline: `TurnClock.mark_heard` queues the
+    answer behind whatever filler audio is still unplayed, and a filler that never
+    yields early never shortens that queue. Ten filler chunks are available; the
+    real answer is ready after the third would have been reached, so far fewer
+    than ten must actually be yielded."""
+
+    async def long_filler() -> AsyncIterator[bytes]:
+        for i in range(10):
+            await asyncio.sleep(0.01)
+            yield f"filler-{i}".encode()
+
+    def answer_ready_after(delay: float):
+        async def produce() -> AsyncIterator[bytes]:
+            await asyncio.sleep(delay)
+            yield b"answer-1"
+
+        return produce
+
+    clock = TurnClock()
+
+    heard = [
+        chunk
+        async for chunk in speak_within(
+            answer_ready_after(0.03)(), long_filler, clock, deadline_ms=1
+        )
+    ]
+
+    filler_chunks = [c for c in heard if c.startswith(b"filler-")]
+    assert 0 < len(filler_chunks) < 10
+    assert heard[-1] == b"answer-1"
+
+
 async def test_the_target_is_judged_against_the_answer_not_the_filler() -> None:
     """A configuration that met p95 by talking over the gap has not met it."""
     clock = TurnClock()
