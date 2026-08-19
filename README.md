@@ -161,6 +161,12 @@ old-age-pension scheme on the shared word "pension." **Not a CI gate yet**:
 the labels need a human review pass before 80% means anything gate-worthy,
 per this file's own header and Spanlight's 35.8%-mislabeled-corpus lesson.
 
+**Threats to validity**: [`ablation/threats-to-validity.md`](ablation/threats-to-validity.md),
+led by the one this session actually hit rather than a textbook list, sustained
+account throttling from this session's own testing volume, discovered mid-way
+through closing M5.2c. The published ablation table above predates that fix;
+stated there in the same place, not left implicit.
+
 ## Technical decisions
 
 Full log with context, alternatives, and consequences: [`DECISIONS.md`](DECISIONS.md),
