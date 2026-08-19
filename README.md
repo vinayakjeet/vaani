@@ -248,4 +248,7 @@ client UI rather than left to read as a hang.
 
 Reproduce any number above: `uv run python -m bench.<script>` (`waterfall`,
 `tail_multiplication`, `endpointing_frontier`, `prompt_cache`, `ablation`),
-each writing its own raw per-run JSON alongside the printed summary.
+each writing its own raw per-run JSON alongside the printed summary. The
+exact raw data behind every number actually published here is committed in
+[`bench/results/`](bench/results/) and [`eval/results/`](eval/results/),
+so checking a figure never requires spending a live API call.

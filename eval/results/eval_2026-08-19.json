@@ -1,0 +1,1164 @@
+[
+  {
+    "id": "pm-kisan-positive-1",
+    "category": "eligibility_positive",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 85,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": null,
+            "category": "general",
+            "land_holding_acres": 3,
+            "state": "unknown"
+          },
+          "scheme_id": "pm-kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pm-kisan-positive-2",
+    "category": "eligibility_positive",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 69,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan yojana",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": null,
+            "category": "general",
+            "land_holding_acres": 2,
+            "state": "unknown"
+          },
+          "scheme_id": "pm-kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pm-jay-positive-1",
+    "category": "eligibility_positive",
+    "passed": false,
+    "reason": "expected 'check_eligibility' to be called, got ['find_schemes']",
+    "reply_chars": 230,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Ayushman Bharat"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pm-jay-positive-2",
+    "category": "eligibility_positive",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 83,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "health scheme",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 300000,
+            "state": "unknown"
+          },
+          "scheme_id": "pm-jay"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pmay-g-positive-1",
+    "category": "eligibility_positive",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 152,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Awas Yojana",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 200000,
+            "state": "unknown"
+          },
+          "scheme_id": "pmay-g"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "ujjwala-positive-1",
+    "category": "eligibility_positive",
+    "passed": false,
+    "reason": "expected 'check_eligibility' to be called, got ['find_schemes']",
+    "reply_chars": 195,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Ujjwala",
+          "state": null
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "nsap-oap-positive-1",
+    "category": "eligibility_positive",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 135,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "old age pension",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 0,
+            "category": "general",
+            "land_holding_acres": 0,
+            "state": "any"
+          },
+          "scheme_id": "nsap-oap"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "nsap-oap-positive-2",
+    "category": "eligibility_positive",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 89,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "vridha pension",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 50000,
+            "state": "any"
+          },
+          "scheme_id": "nsap-oap"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pm-kisan-positive-3",
+    "category": "eligibility_positive",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 184,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan yojana",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": null,
+            "category": "general",
+            "land_holding_acres": 1,
+            "state": "unknown"
+          },
+          "scheme_id": "pm-kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pmay-g-positive-2",
+    "category": "eligibility_positive",
+    "passed": false,
+    "reason": "check_eligibility was attempted and failed: no scheme with id 'PM_AWAS_YOJANA'. Valid scheme_id values: nsap-oap, pm-jay, pm-kisan, pmay-g, ujjwala",
+    "reply_chars": 82,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 150000,
+            "state": "any"
+          },
+          "scheme_id": "PM_AWAS_YOJANA"
+        },
+        "error": "no scheme with id 'PM_AWAS_YOJANA'. Valid scheme_id values: nsap-oap, pm-jay, pm-kisan, pmay-g, ujjwala"
+      },
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Awas Yojana",
+          "state": "any"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pm-kisan-negative-1",
+    "category": "eligibility_negative",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 82,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan yojana"
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": null,
+            "category": "general",
+            "land_holding_acres": 10,
+            "state": "any"
+          },
+          "scheme_id": "pm-kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pm-jay-negative-1",
+    "category": "eligibility_negative",
+    "passed": false,
+    "reason": "expected 'check_eligibility' to be called, got ['find_schemes']",
+    "reply_chars": 335,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Ayushman Bharat"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pmay-g-negative-1",
+    "category": "eligibility_negative",
+    "passed": false,
+    "reason": "expected 'check_eligibility' to be called, got ['find_schemes']",
+    "reply_chars": 206,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Awas Yojana"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "ujjwala-negative-1",
+    "category": "eligibility_negative",
+    "passed": false,
+    "reason": "check_eligibility was attempted and failed: no scheme with id 'Ujjwala'. Valid scheme_id values: nsap-oap, pm-jay, pm-kisan, pmay-g, ujjwala",
+    "reply_chars": 82,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Ujjwala",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 2000000,
+            "state": "unknown"
+          },
+          "scheme_id": "Ujjwala"
+        },
+        "error": "no scheme with id 'Ujjwala'. Valid scheme_id values: nsap-oap, pm-jay, pm-kisan, pmay-g, ujjwala"
+      }
+    ]
+  },
+  {
+    "id": "nsap-oap-negative-1",
+    "category": "eligibility_negative",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 190,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "old age pension",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 5000000,
+            "state": "unknown"
+          },
+          "scheme_id": "nsap-oap"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pm-kisan-negative-2",
+    "category": "eligibility_negative",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 82,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": null,
+            "category": "general",
+            "land_holding_acres": 15,
+            "state": "any"
+          },
+          "scheme_id": "pm-kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pm-kisan-boundary",
+    "category": "boundary",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 87,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": null,
+            "category": "general",
+            "land_holding_acres": 5,
+            "state": "?"
+          },
+          "scheme_id": "pm-kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "pm-jay-boundary",
+    "category": "boundary",
+    "passed": false,
+    "reason": "expected 'check_eligibility' to be called, got ['find_schemes']",
+    "reply_chars": 178,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Ayushman Bharat"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "nsap-oap-boundary",
+    "category": "boundary",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 149,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "pension elderly income 1.2 lakh"
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 120000,
+            "state": "*"
+          },
+          "scheme_id": "nsap-oap"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "find-health",
+    "category": "find_schemes",
+    "passed": false,
+    "reason": "expected 'pm-jay' among find_schemes results, got []",
+    "reply_chars": 399,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "medical treatment illness government scheme",
+          "state": null
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "find-house",
+    "category": "find_schemes",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 283,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "ghar"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "find-gas",
+    "category": "find_schemes",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 326,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "gas cylinder"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "find-pension",
+    "category": "find_schemes",
+    "passed": false,
+    "reason": "expected 'find_schemes' to be called, got []",
+    "reply_chars": 324,
+    "crashed": false,
+    "calls": []
+  },
+  {
+    "id": "find-farmer",
+    "category": "find_schemes",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 297,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "kisan",
+          "state": null
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "find-general",
+    "category": "find_schemes",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 404,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "general assistance welfare scheme India",
+          "state": null
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "out-of-scope-scholarship",
+    "category": "out_of_scope",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 479,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "scholarship"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "out-of-scope-loan",
+    "category": "out_of_scope",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 296,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 3,
+          "query": "business loan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "out-of-scope-maternity",
+    "category": "out_of_scope",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 330,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "pregnancy government assistance scheme India",
+          "state": null
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "out-of-scope-employment",
+    "category": "out_of_scope",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 547,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Berojgari bhatta",
+          "state": null
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "out-of-scope-disability",
+    "category": "out_of_scope",
+    "passed": false,
+    "reason": "expected 'check_eligibility' not to be called, got ['find_schemes', 'check_eligibility']",
+    "reply_chars": 163,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Viklang pension"
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": null,
+            "category": "general",
+            "land_holding_acres": 0,
+            "state": "unknown"
+          },
+          "scheme_id": "nsap-oap"
+        },
+        "error": "annual_income_inr is required to check scheme 'nsap-oap' against its income limit; ask the applicant for it and try again"
+      }
+    ]
+  },
+  {
+    "id": "out-of-scope-education",
+    "category": "out_of_scope",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 159,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "bachon ki padhai sarkari yojana"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "out-of-scope-insurance",
+    "category": "out_of_scope",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 383,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Fasal beema",
+          "state": null
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "out-of-scope-widow",
+    "category": "out_of_scope",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 350,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Vidhwa pension"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "numeral-words-income",
+    "category": "numeral",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 100,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 50000,
+            "category": "general",
+            "land_holding_acres": 2,
+            "state": "any"
+          },
+          "scheme_id": "pm-kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "numeral-words-lakh",
+    "category": "numeral",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 85,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Awas Yojana",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 300000,
+            "state": "unknown"
+          },
+          "scheme_id": "pmay-g"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "numeral-words-crore-out-of-range",
+    "category": "numeral",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 162,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 10000000,
+            "state": "any"
+          },
+          "scheme_id": "Ujjwala"
+        },
+        "error": "no scheme with id 'Ujjwala'. Valid scheme_id values: nsap-oap, pm-jay, pm-kisan, pmay-g, ujjwala"
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 10000000,
+            "state": "any"
+          },
+          "scheme_id": "ujjwala"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "numeral-mixed-land",
+    "category": "numeral",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 90,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "kisan yojana land holding",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": null,
+            "category": "general",
+            "land_holding_acres": "3",
+            "state": "unknown"
+          },
+          "scheme_id": "pm-kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "short-yes",
+    "category": "short",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 109,
+    "crashed": false,
+    "calls": []
+  },
+  {
+    "id": "short-ok",
+    "category": "short",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 28,
+    "crashed": false,
+    "calls": []
+  },
+  {
+    "id": "ambiguous-vague",
+    "category": "short",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 114,
+    "crashed": false,
+    "calls": []
+  },
+  {
+    "id": "code-switch-status",
+    "category": "code_switch",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 307,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan",
+          "state": null
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "code-switch-documents",
+    "category": "code_switch",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 161,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Awas Yojana"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "code-switch-eligible",
+    "category": "code_switch",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 107,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 300000,
+            "category": "general",
+            "land_holding_acres": 2,
+            "state": "unknown"
+          },
+          "scheme_id": "pm-kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "adversarial-invented-threshold",
+    "category": "adversarial",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 106,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "adversarial-guess-deadline",
+    "category": "adversarial",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 141,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Ujjwala yojana"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "adversarial-unverified-eligible",
+    "category": "adversarial",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 226,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "Ayushman Bharat"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "multi-scheme-farmer-health",
+    "category": "multi_scheme",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 269,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "farmer sick family health scheme",
+          "state": null
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "devanagari-kisan",
+    "category": "eligibility_positive",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 198,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "PM Kisan Yojana",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": null,
+            "category": "general",
+            "land_holding_acres": 4,
+            "state": ""
+          },
+          "scheme_id": "pm-kisan"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "devanagari-pension",
+    "category": "eligibility_positive",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 98,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "वृद्धावस्था पेंशन",
+          "state": null
+        },
+        "error": null
+      },
+      {
+        "name": "check_eligibility",
+        "arguments": {
+          "applicant": {
+            "annual_income_inr": 0,
+            "category": "general",
+            "land_holding_acres": 0,
+            "state": "any"
+          },
+          "scheme_id": "nsap-oap"
+        },
+        "error": null
+      }
+    ]
+  },
+  {
+    "id": "devanagari-out-of-scope",
+    "category": "out_of_scope",
+    "passed": true,
+    "reason": "ok",
+    "reply_chars": 231,
+    "crashed": false,
+    "calls": [
+      {
+        "name": "find_schemes",
+        "arguments": {
+          "limit": 5,
+          "query": "शादी"
+        },
+        "error": null
+      }
+    ]
+  }
+]

@@ -1,0 +1,596 @@
+{
+  "summary": {
+    "n_turns": 20,
+    "n_utterances": 20,
+    "heard_nothing": 0,
+    "no_reply": 0,
+    "timed_out": 0,
+    "filler_rate": 1.0,
+    "stages": {
+      "vad.endpoint": {
+        "n": 20,
+        "p50_ms": 5418.8,
+        "p95_ms": 6042.9,
+        "min_ms": 1011.2,
+        "max_ms": 7919.6,
+        "stdev_ms": 1425.7
+      },
+      "stt.stream": {
+        "n": 20,
+        "p50_ms": 10966.1,
+        "p95_ms": 14634.1,
+        "min_ms": 1600.1,
+        "max_ms": 17543.7,
+        "stdev_ms": 3654.4
+      },
+      "llm.generate": {
+        "n": 20,
+        "p50_ms": 5203.8,
+        "p95_ms": 11011.5,
+        "min_ms": 2254.6,
+        "max_ms": 12828.5,
+        "stdev_ms": 2522.4
+      },
+      "tts.synthesize": {
+        "n": 20,
+        "p50_ms": 3139.2,
+        "p95_ms": 7925.8,
+        "min_ms": 1635.2,
+        "max_ms": 8262.3,
+        "stdev_ms": 1975.7
+      },
+      "turn": {
+        "n": 20,
+        "p50_ms": 6195.3,
+        "p95_ms": 6804.9,
+        "min_ms": 1807.7,
+        "max_ms": 8685.0,
+        "stdev_ms": 1417.3
+      }
+    },
+    "headline": {
+      "first_audio_ms": {
+        "n": 20,
+        "p50_ms": 1464.9,
+        "p95_ms": 1516.6
+      },
+      "first_answer_audio_ms": {
+        "n": 19,
+        "p50_ms": 14332.3,
+        "p95_ms": 18310.0
+      },
+      "first_answer_heard_ms": {
+        "n": 19,
+        "p50_ms": 14332.4,
+        "p95_ms": 18310.1
+      }
+    }
+  },
+  "raw": [
+    {
+      "utterance_id": "scheme-pm-kisan",
+      "category": "scheme",
+      "audio_duration_s": 5.304,
+      "stage_ms": {
+        "vad.endpoint": [
+          4793.5878
+        ],
+        "turn": [
+          5645.9541
+        ],
+        "stt.stream": [
+          4971.8898
+        ],
+        "tts.synthesize": [
+          2752.7017,
+          2187.2066,
+          1486.2439,
+          1836.1843
+        ],
+        "llm.generate": [
+          12828.5459
+        ]
+      },
+      "heard_chars": 15,
+      "reply_chars": 408,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "scheme-pm-jay",
+      "category": "scheme",
+      "audio_duration_s": 6.384,
+      "stage_ms": {
+        "vad.endpoint": [
+          5906.7433
+        ],
+        "turn": [
+          6656.5863
+        ],
+        "stt.stream": [
+          12670.5669
+        ],
+        "tts.synthesize": [
+          1923.1509,
+          1454.4603,
+          1800.2828
+        ],
+        "llm.generate": [
+          7193.69
+        ]
+      },
+      "heard_chars": 70,
+      "reply_chars": 379,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "scheme-pmay-g",
+      "category": "scheme",
+      "audio_duration_s": 5.856,
+      "stage_ms": {
+        "vad.endpoint": [
+          5335.8709
+        ],
+        "turn": [
+          6085.1261
+        ],
+        "stt.stream": [
+          13263.3182
+        ],
+        "tts.synthesize": [
+          1020.3863,
+          926.2004
+        ],
+        "llm.generate": [
+          5581.5771
+        ]
+      },
+      "heard_chars": 63,
+      "reply_chars": 81,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "scheme-ujjwala",
+      "category": "scheme",
+      "audio_duration_s": 5.352,
+      "stage_ms": {
+        "vad.endpoint": [
+          4706.1594
+        ],
+        "turn": [
+          5501.9977
+        ],
+        "stt.stream": [
+          7781.9932
+        ],
+        "tts.synthesize": [
+          3879.0904,
+          1602.5662,
+          2444.1205
+        ],
+        "llm.generate": [
+          11011.5302
+        ]
+      },
+      "heard_chars": 41,
+      "reply_chars": 428,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "scheme-nsap-oap",
+      "category": "scheme",
+      "audio_duration_s": 6.144,
+      "stage_ms": {
+        "vad.endpoint": [
+          5633.576
+        ],
+        "turn": [
+          6364.7246
+        ],
+        "stt.stream": [
+          12008.9916
+        ],
+        "tts.synthesize": [
+          904.925,
+          1034.9637
+        ],
+        "llm.generate": [
+          3581.5015
+        ]
+      },
+      "heard_chars": 64,
+      "reply_chars": 81,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "eligibility-income-words",
+      "category": "numeral",
+      "audio_duration_s": 8.52,
+      "stage_ms": {
+        "vad.endpoint": [
+          7919.5747
+        ],
+        "turn": [
+          8685.0216
+        ],
+        "stt.stream": [
+          17543.7347
+        ],
+        "tts.synthesize": [
+          1892.5525
+        ],
+        "llm.generate": [
+          3624.495
+        ]
+      },
+      "heard_chars": 85,
+      "reply_chars": 154,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "eligibility-income-digits",
+      "category": "numeral",
+      "audio_duration_s": 6.408,
+      "stage_ms": {
+        "vad.endpoint": [
+          5926.0997
+        ],
+        "turn": [
+          6666.3415
+        ],
+        "stt.stream": [
+          10293.5237
+        ],
+        "tts.synthesize": [
+          1192.1269,
+          977.4228
+        ],
+        "llm.generate": [
+          3597.9078
+        ]
+      },
+      "heard_chars": 70,
+      "reply_chars": 81,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "eligibility-land",
+      "category": "numeral",
+      "audio_duration_s": 6.096,
+      "stage_ms": {
+        "vad.endpoint": [
+          5585.7078
+        ],
+        "turn": [
+          6305.4903
+        ],
+        "stt.stream": [
+          11051.268
+        ],
+        "tts.synthesize": [
+          1036.549,
+          926.6862
+        ],
+        "llm.generate": [
+          4175.7923
+        ]
+      },
+      "heard_chars": 62,
+      "reply_chars": 81,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "find-schemes-health",
+      "category": "scheme",
+      "audio_duration_s": 5.664,
+      "stage_ms": {
+        "vad.endpoint": [
+          5199.2679
+        ],
+        "turn": [
+          5910.5341
+        ],
+        "stt.stream": [
+          10880.9006
+        ],
+        "tts.synthesize": [
+          2033.5997,
+          1665.5419
+        ],
+        "llm.generate": [
+          5243.0915
+        ]
+      },
+      "heard_chars": 60,
+      "reply_chars": 241,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "find-schemes-general",
+      "category": "scheme",
+      "audio_duration_s": 6.336,
+      "stage_ms": {
+        "vad.endpoint": [
+          5814.3284
+        ],
+        "turn": [
+          6567.9274
+        ],
+        "stt.stream": [
+          13059.7267
+        ],
+        "tts.synthesize": [
+          2883.5702,
+          2156.8914
+        ],
+        "llm.generate": [
+          6539.9503
+        ]
+      },
+      "heard_chars": 64,
+      "reply_chars": 354,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "out-of-scope-scholarship",
+      "category": "out_of_scope",
+      "audio_duration_s": 4.776,
+      "stage_ms": {
+        "vad.endpoint": [
+          4292.4665
+        ],
+        "turn": [
+          5023.8598
+        ],
+        "stt.stream": [
+          9231.6516
+        ],
+        "tts.synthesize": [
+          2274.3456,
+          1743.2058,
+          1719.3244
+        ],
+        "llm.generate": [
+          7317.3205
+        ]
+      },
+      "heard_chars": 52,
+      "reply_chars": 349,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "out-of-scope-loan",
+      "category": "out_of_scope",
+      "audio_duration_s": 4.176,
+      "stage_ms": {
+        "vad.endpoint": [
+          3686.2384
+        ],
+        "turn": [
+          4472.8315
+        ],
+        "stt.stream": [
+          6976.4546
+        ],
+        "tts.synthesize": [
+          1875.3638,
+          1729.9031
+        ],
+        "llm.generate": [
+          5164.5054
+        ]
+      },
+      "heard_chars": 34,
+      "reply_chars": 221,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "short-yes",
+      "category": "short",
+      "audio_duration_s": 1.776,
+      "stage_ms": {
+        "vad.endpoint": [
+          1011.2368
+        ],
+        "turn": [
+          1807.6669
+        ],
+        "stt.stream": [
+          1600.1479
+        ],
+        "tts.synthesize": [
+          1237.5321,
+          1392.3777
+        ],
+        "llm.generate": [
+          3857.4394
+        ]
+      },
+      "heard_chars": 5,
+      "reply_chars": 77,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "short-ok",
+      "category": "short",
+      "audio_duration_s": 2.688,
+      "stage_ms": {
+        "vad.endpoint": [
+          2065.1178
+        ],
+        "turn": [
+          2841.8584
+        ],
+        "stt.stream": [
+          5568.3283
+        ],
+        "tts.synthesize": [
+          1635.1838
+        ],
+        "llm.generate": [
+          2254.615
+        ]
+      },
+      "heard_chars": 15,
+      "reply_chars": 37,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "code-switch-status",
+      "category": "code_switch",
+      "audio_duration_s": 6.024,
+      "stage_ms": {
+        "vad.endpoint": [
+          5501.8218
+        ],
+        "turn": [
+          6317.8467
+        ],
+        "stt.stream": [
+          11630.6648
+        ],
+        "tts.synthesize": [
+          2673.2142
+        ],
+        "llm.generate": [
+          4265.2882
+        ]
+      },
+      "heard_chars": 65,
+      "reply_chars": 192,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "code-switch-documents",
+      "category": "code_switch",
+      "audio_duration_s": 5.4,
+      "stage_ms": {
+        "vad.endpoint": [
+          4946.1095
+        ],
+        "turn": [
+          5752.0365
+        ],
+        "stt.stream": [
+          10037.2612
+        ],
+        "tts.synthesize": [
+          1796.337,
+          1362.0139,
+          1278.7626
+        ],
+        "llm.generate": [
+          5999.2095
+        ]
+      },
+      "heard_chars": 47,
+      "reply_chars": 317,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "code-switch-online",
+      "category": "code_switch",
+      "audio_duration_s": 5.592,
+      "stage_ms": {
+        "vad.endpoint": [
+          5095.0913
+        ],
+        "turn": [
+          5913.1336
+        ],
+        "stt.stream": [
+          11315.046
+        ],
+        "tts.synthesize": [
+          2391.0804,
+          1546.8761,
+          1243.1059
+        ],
+        "llm.generate": [
+          6046.3609
+        ]
+      },
+      "heard_chars": 68,
+      "reply_chars": 351,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "devanagari-kisan",
+      "category": "scheme",
+      "audio_duration_s": 6.36,
+      "stage_ms": {
+        "vad.endpoint": [
+          5564.6673
+        ],
+        "turn": [
+          6331.0162
+        ],
+        "stt.stream": [
+          14634.1466
+        ],
+        "tts.synthesize": [
+          1056.8083,
+          806.4382
+        ],
+        "llm.generate": [
+          3560.6911
+        ]
+      },
+      "heard_chars": 60,
+      "reply_chars": 81,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "devanagari-pension",
+      "category": "scheme",
+      "audio_duration_s": 6.528,
+      "stage_ms": {
+        "vad.endpoint": [
+          6042.8772
+        ],
+        "turn": [
+          6804.8515
+        ],
+        "stt.stream": [
+          11717.7214
+        ],
+        "tts.synthesize": [
+          985.0828,
+          908.4777
+        ],
+        "llm.generate": [
+          3469.5721
+        ]
+      },
+      "heard_chars": 72,
+      "reply_chars": 81,
+      "timed_out": false
+    },
+    {
+      "utterance_id": "negative-not-eligible",
+      "category": "numeral",
+      "audio_duration_s": 6.048,
+      "stage_ms": {
+        "vad.endpoint": [
+          5597.4584
+        ],
+        "turn": [
+          6407.8465
+        ],
+        "stt.stream": [
+          5723.2903
+        ],
+        "tts.synthesize": [
+          1405.0721,
+          1547.6159,
+          1538.3169
+        ],
+        "llm.generate": [
+          5628.4532
+        ]
+      },
+      "heard_chars": 27,
+      "reply_chars": 244,
+      "timed_out": false
+    }
+  ]
+}

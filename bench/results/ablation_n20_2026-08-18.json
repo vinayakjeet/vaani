@@ -1,0 +1,455 @@
+{
+  "summary": {
+    "n_per_arm": {
+      "unstreamed": 20,
+      "streamed": 20,
+      "semantic_off": 20
+    },
+    "failures_per_arm": {},
+    "arms": {
+      "unstreamed": {
+        "n": 20,
+        "median_ms": 5666.7,
+        "min_ms": 3402.5,
+        "max_ms": 9632.1,
+        "delta_vs_baseline_ms": 0.0
+      },
+      "streamed": {
+        "n": 20,
+        "median_ms": 11114.3,
+        "min_ms": 5716.0,
+        "max_ms": 14992.2,
+        "delta_vs_baseline_ms": -5447.6
+      },
+      "semantic_off": {
+        "n": 20,
+        "median_ms": 10793.4,
+        "min_ms": 4984.5,
+        "max_ms": 16490.4,
+        "delta_vs_baseline_ms": -5126.6
+      }
+    }
+  },
+  "raw": [
+    {
+      "arm": "unstreamed",
+      "utterance_id": "scheme-pm-kisan",
+      "first_answer_heard_ms": 8253.0972,
+      "reply_chars": 257,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "scheme-pm-kisan",
+      "first_answer_heard_ms": 6407.624,
+      "reply_chars": 277,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "scheme-pm-kisan",
+      "first_answer_heard_ms": 9213.9335,
+      "reply_chars": 372,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "scheme-pm-jay",
+      "first_answer_heard_ms": 5564.7836,
+      "reply_chars": 344,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "scheme-pm-jay",
+      "first_answer_heard_ms": 13254.9857,
+      "reply_chars": 409,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "scheme-pm-jay",
+      "first_answer_heard_ms": 14158.6365,
+      "reply_chars": 393,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "scheme-pmay-g",
+      "first_answer_heard_ms": 5644.8265,
+      "reply_chars": 213,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "scheme-pmay-g",
+      "first_answer_heard_ms": 12628.6275,
+      "reply_chars": 139,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "scheme-pmay-g",
+      "first_answer_heard_ms": 7509.0705,
+      "reply_chars": 255,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "scheme-ujjwala",
+      "first_answer_heard_ms": 9632.1138,
+      "reply_chars": 414,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "scheme-ujjwala",
+      "first_answer_heard_ms": 8404.6578,
+      "reply_chars": 452,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "scheme-ujjwala",
+      "first_answer_heard_ms": 10876.0179,
+      "reply_chars": 513,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "scheme-nsap-oap",
+      "first_answer_heard_ms": 6249.7884,
+      "reply_chars": 252,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "scheme-nsap-oap",
+      "first_answer_heard_ms": 12570.7922,
+      "reply_chars": 204,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "scheme-nsap-oap",
+      "first_answer_heard_ms": 10273.1169,
+      "reply_chars": 219,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "eligibility-income-words",
+      "first_answer_heard_ms": 5316.5565,
+      "reply_chars": 304,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "eligibility-income-words",
+      "first_answer_heard_ms": 12980.054,
+      "reply_chars": 294,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "eligibility-income-words",
+      "first_answer_heard_ms": 16490.3798,
+      "reply_chars": 81,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "eligibility-income-digits",
+      "first_answer_heard_ms": 6703.4486,
+      "reply_chars": 362,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "eligibility-income-digits",
+      "first_answer_heard_ms": 14992.1511,
+      "reply_chars": 151,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "eligibility-income-digits",
+      "first_answer_heard_ms": 11605.7277,
+      "reply_chars": 81,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "eligibility-land",
+      "first_answer_heard_ms": 5420.0709,
+      "reply_chars": 255,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "eligibility-land",
+      "first_answer_heard_ms": 10896.1136,
+      "reply_chars": 126,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "eligibility-land",
+      "first_answer_heard_ms": 12627.68,
+      "reply_chars": 206,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "find-schemes-health",
+      "first_answer_heard_ms": 5337.7108,
+      "reply_chars": 404,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "find-schemes-health",
+      "first_answer_heard_ms": 12684.6218,
+      "reply_chars": 265,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "find-schemes-health",
+      "first_answer_heard_ms": 10710.7597,
+      "reply_chars": 286,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "find-schemes-general",
+      "first_answer_heard_ms": 5854.343,
+      "reply_chars": 232,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "find-schemes-general",
+      "first_answer_heard_ms": 14751.3594,
+      "reply_chars": 364,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "find-schemes-general",
+      "first_answer_heard_ms": 9253.725,
+      "reply_chars": 194,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "out-of-scope-scholarship",
+      "first_answer_heard_ms": 4829.5028,
+      "reply_chars": 319,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "out-of-scope-scholarship",
+      "first_answer_heard_ms": 11332.5801,
+      "reply_chars": 363,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "out-of-scope-scholarship",
+      "first_answer_heard_ms": 10189.1586,
+      "reply_chars": 212,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "out-of-scope-loan",
+      "first_answer_heard_ms": 4600.0195,
+      "reply_chars": 296,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "out-of-scope-loan",
+      "first_answer_heard_ms": 10137.5596,
+      "reply_chars": 158,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "out-of-scope-loan",
+      "first_answer_heard_ms": 7558.0194,
+      "reply_chars": 302,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "short-yes",
+      "first_answer_heard_ms": 3402.4767,
+      "reply_chars": 46,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "short-yes",
+      "first_answer_heard_ms": 5715.9834,
+      "reply_chars": 68,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "short-yes",
+      "first_answer_heard_ms": 4984.4626,
+      "reply_chars": 86,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "short-ok",
+      "first_answer_heard_ms": 3696.0054,
+      "reply_chars": 41,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "short-ok",
+      "first_answer_heard_ms": 7990.1616,
+      "reply_chars": 62,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "short-ok",
+      "first_answer_heard_ms": 11517.6433,
+      "reply_chars": 37,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "code-switch-status",
+      "first_answer_heard_ms": 5927.6026,
+      "reply_chars": 329,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "code-switch-status",
+      "first_answer_heard_ms": 13894.0876,
+      "reply_chars": 291,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "code-switch-status",
+      "first_answer_heard_ms": 12257.2406,
+      "reply_chars": 194,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "code-switch-documents",
+      "first_answer_heard_ms": 5468.7934,
+      "reply_chars": 186,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "code-switch-documents",
+      "first_answer_heard_ms": 10488.0186,
+      "reply_chars": 138,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "code-switch-documents",
+      "first_answer_heard_ms": 11410.3802,
+      "reply_chars": 315,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "code-switch-online",
+      "first_answer_heard_ms": 5856.1287,
+      "reply_chars": 294,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "code-switch-online",
+      "first_answer_heard_ms": 9642.355,
+      "reply_chars": 240,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "code-switch-online",
+      "first_answer_heard_ms": 11407.0617,
+      "reply_chars": 351,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "devanagari-kisan",
+      "first_answer_heard_ms": 5688.6674,
+      "reply_chars": 334,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "devanagari-kisan",
+      "first_answer_heard_ms": 11940.5008,
+      "reply_chars": 328,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "devanagari-kisan",
+      "first_answer_heard_ms": 12188.0463,
+      "reply_chars": 375,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "devanagari-pension",
+      "first_answer_heard_ms": 6424.9759,
+      "reply_chars": 308,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "devanagari-pension",
+      "first_answer_heard_ms": 9573.6467,
+      "reply_chars": 185,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "devanagari-pension",
+      "first_answer_heard_ms": 8689.5494,
+      "reply_chars": 310,
+      "error": null
+    },
+    {
+      "arm": "unstreamed",
+      "utterance_id": "negative-not-eligible",
+      "first_answer_heard_ms": 7337.8817,
+      "reply_chars": 198,
+      "error": null
+    },
+    {
+      "arm": "streamed",
+      "utterance_id": "negative-not-eligible",
+      "first_answer_heard_ms": 9422.2855,
+      "reply_chars": 234,
+      "error": null
+    },
+    {
+      "arm": "semantic_off",
+      "utterance_id": "negative-not-eligible",
+      "first_answer_heard_ms": 7971.789,
+      "reply_chars": 236,
+      "error": null
+    }
+  ]
+}
