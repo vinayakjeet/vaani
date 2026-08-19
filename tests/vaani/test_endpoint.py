@@ -25,6 +25,13 @@ SILENCE = b"\x00" * SAMPLES_PER_FRAME * 2
 SPEECH = tone(8000)
 ROOM_NOISE = tone(200)
 
+# A real browser microphone rather than the corpus. Every recorded corpus file is
+# synthesised speech peaking near 7000 RMS over digitally zero silence, so any
+# fixed gate between the two behaves identically on it. The microphone that found
+# this bug delivered speech near 200 RMS over a room floor near 20.
+QUIET_ROOM = tone(30)
+QUIET_SPEECH = tone(280)
+
 
 def feed(endpointer: Endpointer, frame: bytes, ms: int) -> bool:
     ended = False
@@ -76,6 +83,32 @@ def test_room_noise_below_the_threshold_is_not_speech() -> None:
 
     assert not feed(endpointer, ROOM_NOISE, 2000)
     assert not endpointer.started
+
+
+def test_speech_on_a_quiet_microphone_still_starts_a_turn() -> None:
+    """The bug a real microphone found and the corpus structurally could not.
+
+    The fixed 600 RMS gate was a guess at "a quiet room on a laptop microphone",
+    never measured, and the only audio it was ever exercised against was the
+    synthesised corpus: speech near 7000 RMS over digitally zero silence, where
+    every gate between 1 and 3000 behaves the same. A real browser microphone
+    with noise suppression on delivered speech near 200 RMS, under the gate, so
+    the endpointer reported `too_quiet` forever and no turn ever started, while
+    Whisper transcribed that very same audio without complaint.
+
+    Speech here is roughly ten times its own room's floor, which is what makes it
+    speech, and still far below the old fixed gate, which is what made it
+    invisible.
+    """
+    endpointer = Endpointer()
+
+    assert not feed(endpointer, QUIET_ROOM, 1000), "the room's own floor is not speech"
+    assert not endpointer.started
+
+    feed(endpointer, QUIET_SPEECH, 600)
+
+    assert endpointer.started, "quiet speech well above its own noise floor is speech"
+    assert feed(endpointer, QUIET_ROOM, 2000), "and the turn still ends on silence"
 
 
 def test_reset_returns_it_to_a_fresh_turn() -> None:

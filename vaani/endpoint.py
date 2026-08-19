@@ -15,6 +15,7 @@ from __future__ import annotations
 import array
 import math
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -88,6 +89,48 @@ COMPLETION_AUDIO_BYTES = 8 * 16_000 * 2
 # microphone needs unmuting, and a quiet one needs the speaker to move closer.
 SILENT_RMS = 1.0
 
+# The fixed thresholds above are absolute levels, and an absolute level cannot be
+# right for every microphone. Measured 2026-08-19, against the deployed service:
+# the synthesised corpus every threshold here was ever exercised against carries
+# speech near 7000 RMS over digitally zero silence, so any gate between 1 and 3000
+# behaves identically on it and the corpus can never fail one. A real browser
+# microphone, with the noise suppression the client asks for, delivered speech
+# near 200 RMS. Below the 600 gate, so `diagnose` reported `too_quiet` forever and
+# no turn ever started, while Whisper transcribed the very same audio without
+# complaint. Confirmed by replaying one corpus file into the live socket twice: at
+# full level it answered, and attenuated to a 444 RMS peak it returned exactly the
+# `too_quiet` a real user had reported.
+#
+# So the gate is measured against the room instead of asserted at it. What makes a
+# frame speech is how far it sits above that room's own floor, which is the one
+# ratio that carries across microphones.
+#
+# This only ever lowers the gate, never raises it: the configured `threshold_rms`
+# stays an upper bound. A loud input behaves exactly as before, which is why every
+# existing test and the published ablation are untouched by this, and a quiet one
+# is no longer silently unusable. A noisy room keeps the old fixed gate rather
+# than getting a higher one, which is a real remaining limit and belongs to the
+# proper VAD in M1.1 rather than to an energy heuristic.
+#
+# Provisional in the same way every other number in this file is, and labelled so:
+# the multiple is grounded in speech sitting roughly 10dB over room tone at a
+# conversational distance (3x in RMS is about 9.5dB) rather than in a measurement
+# of this project's own, because no corpus of real microphone audio exists here to
+# measure it from. That corpus is what M4.2 is for.
+NOISE_FLOOR_MULTIPLE = 3.0
+
+# The lowest the adaptive gate may fall. `SILENT_RMS` is where an input is off
+# rather than quiet; this sits well above it so digital silence and its dither can
+# never be read as somebody speaking.
+MIN_ADAPTIVE_RMS = 40.0
+
+# How much recent audio the floor is estimated over, and which percentile of it is
+# taken as the floor. Three seconds is long enough to contain the gaps between
+# words, which is what keeps continuous speech from raising the floor to its own
+# level, and the tenth percentile is low enough to sit in those gaps.
+NOISE_WINDOW_FRAMES = 150
+NOISE_FLOOR_PERCENTILE = 0.10
+
 
 class MicState(StrEnum):
     OK = "ok"
@@ -128,6 +171,13 @@ class Endpointer:
     # a flag so the ablation constructs both arms and neither can be reached by accident.
     speech: Callable[[bytes], bool] | None = None
 
+    # Whether the energy gate is measured against the room's own floor rather than
+    # taken as an absolute level. On by default because an absolute level is wrong
+    # for every microphone that is not the one it was guessed at; off is the exact
+    # previous behaviour, kept so a bench arm can still measure the fixed gate.
+    # Ignored entirely when `speech` is a real detector, which does its own deciding.
+    adaptive: bool = True
+
     # What decides the utterance already sounds finished. None is the word-order rule on
     # the partial transcript, fed through `note_partial`; a callable is handed the turn's
     # audio, which is what `vaani.smart_turn.SmartTurn` reads. The two arms answer the
@@ -159,6 +209,28 @@ class Endpointer:
     # the whole service to somebody who leaves a microphone open.
     _heard: bytearray = field(default_factory=bytearray, init=False)
     _asked: bool = field(default=False, init=False)
+    # Recent frame levels, for the noise floor the gate is measured against. Not
+    # cleared by `reset`: the room is the same room between two turns, and throwing
+    # the estimate away at every endpoint would mean re-learning it during the first
+    # second of every utterance, which is exactly when it is needed.
+    _levels: deque[float] = field(
+        default_factory=lambda: deque(maxlen=NOISE_WINDOW_FRAMES), init=False
+    )
+
+    def effective_threshold(self) -> float:
+        """The gate this frame is actually judged against.
+
+        `threshold_rms` is the ceiling rather than the answer. See the note on
+        `NOISE_FLOOR_MULTIPLE`: an absolute level cannot be right for every
+        microphone, so what counts is the distance above this room's own floor,
+        and the configured value stays an upper bound so a loud input is judged
+        exactly as it was before.
+        """
+        if not self.adaptive or not self._levels:
+            return self.threshold_rms
+        ordered = sorted(self._levels)
+        floor = ordered[int(len(ordered) * NOISE_FLOOR_PERCENTILE)]
+        return min(self.threshold_rms, max(floor * NOISE_FLOOR_MULTIPLE, MIN_ADAPTIVE_RMS))
 
     @classmethod
     def at(cls, aggressiveness: int = DEFAULT_AGGRESSIVENESS, **overrides: object) -> Endpointer:
@@ -260,12 +332,15 @@ class Endpointer:
         # `test_a_pause_mid_turn_is_not_a_microphone_fault` is where that is pinned.
         self.waiting_ms += FRAME_MS
         self.peak_rms = max(self.peak_rms, level)
+        self._levels.append(level)
 
         # The level is still measured when a detector is in use, because `diagnose`
         # answers a different question with it: whether the microphone is producing
         # anything at all. A model that says "not speech" cannot tell a muted input from
         # a quiet room, and those two need different things said to the user.
-        speaking = level >= self.threshold_rms if self.speech is None else self.speech(pcm)
+        speaking = (
+            level >= self.effective_threshold() if self.speech is None else self.speech(pcm)
+        )
 
         if self.completion is not None:
             self._heard += pcm
