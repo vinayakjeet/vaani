@@ -237,6 +237,21 @@ marketing, not an engineering record.
   deployed service answered since the model swap below was very likely a
   "could not check" filler line, not a real check. Fixed by inlining every
   `$ref` before a schema is advertised, deployed, and verified live.
+- **The deployed agent could not hear a real microphone at all, and no test
+  could see it.** The endpointer's speech gate was a fixed 600 RMS, a guess at
+  "a quiet room on a laptop microphone" that was never measured. The only audio
+  it was ever exercised against was this project's own synthesised corpus,
+  whose speech sits near 7000 RMS over *digitally zero* silence, so every gate
+  between 1 and 3000 classifies it identically: the corpus was structurally
+  incapable of failing this threshold. A real browser microphone delivered
+  speech near 200 RMS, under the gate, so the service answered "audio is
+  arriving but too quiet" forever while Whisper transcribed that very same
+  audio without complaint. 874 green tests, a published waterfall and a full
+  ablation, none of which could see a bug that made the product unusable for
+  every actual user. Reproduced against the live socket by replaying one corpus
+  file twice, at full level and attenuated, with level as the only variable,
+  then fixed by measuring the gate against the room's own noise floor instead
+  of asserting an absolute level.
 - **A latency ablation's own naive baseline turned out to be the fair one.**
   The optimised, streamed arm measured slower than the unstreamed baseline
   at a clean n=20, and the reason was not the clock this time: the filler

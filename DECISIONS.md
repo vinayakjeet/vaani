@@ -12,6 +12,65 @@ reconstructed later from memory. Newest entries at the top.
 **Consequences:** what this makes easier/harder later.
 ```
 
+## 2026-08-19: The speech gate is measured against the room, because an absolute level cannot be right for every microphone
+
+**Context:** the deployed service was unusable from a real browser. It reported
+"audio is arriving but too quiet", then checked in to ask whether the user was
+still there, and never answered. The user's own report, and the first time
+anybody had spoken into this service from a real microphone rather than driven it
+from the synthesised corpus.
+
+The energy gate was a fixed 600 RMS at the default aggressiveness. That number was
+a guess at "roughly the level of a quiet room on a laptop microphone", and this
+file's own source says so: `vaani/endpoint.py` carried "Provisional, and it is not
+allowed to stay that way" above it since M1. The reason it survived that long is
+the more interesting half. Every threshold here was only ever exercised against
+`bench/corpus/*.wav`, which is synthesised TTS: measured 2026-08-19, its speech
+sits at 3000 to 5800 RMS and its silence is **digitally zero**. Any gate between 1
+and 3000 classifies that corpus identically. The corpus was structurally incapable
+of failing this threshold, which is the same shape as ShipGate's gate that could
+not fail and Spanlight's detector that read recorded verdicts: 874 green tests, a
+published waterfall, and a full ablation, none of which could see a bug that made
+the product completely unusable for its actual users.
+
+Root-caused against the live socket rather than reasoned about. Replaying one
+corpus file into the deployed WebSocket at full level returned a transcript, three
+reply sentences and 210 audio chunks. Replaying the *same file* attenuated to a
+444 RMS peak returned exactly `{"reason": "microphone", "detail": "too_quiet"}`
+and then the check-in, and never answered: the user's report, reproduced on
+demand, with audio level as the only variable.
+
+**Decision:** the gate is the distance above the room's own measured noise floor
+(a low percentile of a rolling three-second window) rather than an absolute level,
+because that ratio is the only thing that carries across microphones. The
+configured `threshold_rms` becomes an upper bound, so the change can only ever
+*lower* the gate. A loud input is judged exactly as it was before, which is why
+every existing test and the published ablation are untouched by this; a quiet one
+is no longer silently unusable.
+
+**Alternatives considered:** lowering the fixed number, rejected because picking a
+new absolute constant is the identical mistake with a smaller value, and this
+project's own rule is that thresholds are measured rather than intuited. Turning
+up gain in the capture worklet, rejected because it changes what the transcriber
+receives in order to fix what the endpointer decides, and the transcriber was
+never the thing that was broken: Whisper read the quiet audio perfectly
+throughout. Shipping the real VAD (Silero, already built as an optional arm),
+rejected for now on the same 512MB instance grounds recorded for M1.8, and it
+remains the right long-term answer for the case this fix explicitly does not
+improve.
+
+**Consequences:** verified live after deploying, with the same probe: audio at a
+444 RMS peak now answers, and so does audio at 110, which is roughly a sixty-fifth
+of the corpus level and five times below the old gate. The remaining limit is
+stated rather than hidden: a *noisy* room keeps the old fixed gate rather than
+getting a higher one, so energy alone still cannot tell speech from a television,
+which is M1.1's job and not an energy heuristic's. The deeper consequence is about
+the corpus, not the threshold: a synthesised corpus with digitally zero silence
+cannot validate any level-dependent decision, and every remaining threshold in
+`vaani/endpoint.py` is still calibrated only against it. `ablation/threats-to-validity.md`
+already lists the recorded-corpus limitation; this is the first time it cost the
+product rather than the measurement.
+
 ## 2026-08-19: M5.2c's fix shipped unit-tested; its own live re-verification was deferred, not forced through
 
 **Context:** M5.2c's fix (the filler now stops once the real answer's first chunk
