@@ -147,7 +147,10 @@ M5.2c. Full account, including how the two prior measurement bugs were
 caught, in DECISIONS.md.
 
 **Eval set**, 50 scripted scenarios across 10 categories, `eval/build_scenarios.py`
-and `eval/run_eval.py`: stable at **80% (40/50)** across three independent live
+and `eval/run_eval.py`: exact structural matching against what the pipeline
+actually decided (tool called, scheme id, eligibility verdict), never a
+free-text judge scoring reply prose, so no judge calibration applies here
+(BACKLOG's M4.8). Stable at **80% (40/50)** across three independent live
 runs, after fixing two real bugs the first run itself surfaced (a required
 income field that should not have been required, a runner that silently
 dropped rejected tool calls from its own record) and correcting 13 of the
